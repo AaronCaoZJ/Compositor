@@ -75,8 +75,8 @@ struct CameraRawSlider: View {
                         onEnd: {},
                         onReset: onReset,
                         unit: step.map { $0 / (range.upperBound - range.lowerBound) })
-            .help(help)
-            .accessibilityLabel(help)
+            .help(L10n.string(help))
+            .accessibilityLabel(L10n.string(help))
             .accessibilityValue(Text(String(format: "%.0f", value)))
             .accessibilityAdjustableAction { direction in
                 let nudge = (range.upperBound - range.lowerBound) / 20

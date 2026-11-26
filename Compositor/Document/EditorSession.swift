@@ -103,7 +103,7 @@ enum NavigationTool: String, CaseIterable {
     /// Tools that draw and edit selections, sharing modifiers, moving, and nudging.
     var isSelectionTool: Bool { self == .marquee || self == .lasso || self == .wand }
     var symbol: String { self == .type ? "textformat" : self == .eyedropper ? "eyedropper" : self == .marquee ? "rectangle.dashed" : self == .lasso ? "lasso" : self == .wand ? "wand.and.stars" : self == .brush ? "paintbrush.pointed" : self == .spotHealing ? "bandage" : self == .cloneStamp ? "seal" : self == .blur ? "drop" : self == .gradient ? "square.bottomhalf.filled" : self == .shape ? "square.on.circle" : self == .crop ? "crop" : self == .move ? "arrow.up.left.and.arrow.down.right" : self == .hand ? "hand.raised" : "magnifyingglass" }
-    var label: String { self == .type ? "Type (T)" : self == .eyedropper ? "Eyedropper (I)" : self == .marquee ? "Marquee (M)" : self == .lasso ? "Lasso (L)" : self == .wand ? "Magic (W) · Tab switches Wand and Object" : self == .brush ? "Brush (B) · Eraser (E)" : self == .spotHealing ? "Spot Healing Brush (J)" : self == .cloneStamp ? "Clone Stamp (S) · Option-click sets the source" : self == .blur ? "Smear (R)" : self == .gradient ? "Gradient (G)" : self == .shape ? "Shape (U) · Shift-U switches Rectangle/Ellipse" : self == .crop ? "Crop (C)" : self == .move ? "Move / Transform (V)" : self == .hand ? "Hand (H)" : "Zoom (Z)" }
+    var label: String { self == .type ? String(localized: "Type (T)") : self == .eyedropper ? String(localized: "Eyedropper (I)") : self == .marquee ? String(localized: "Marquee (M)") : self == .lasso ? String(localized: "Lasso (L)") : self == .wand ? String(localized: "Magic (W) · Tab switches Wand and Object") : self == .brush ? String(localized: "Brush (B) · Eraser (E)") : self == .spotHealing ? String(localized: "Spot Healing Brush (J)") : self == .cloneStamp ? String(localized: "Clone Stamp (S) · Option-click sets the source") : self == .blur ? String(localized: "Smear (R)") : self == .gradient ? String(localized: "Gradient (G)") : self == .shape ? String(localized: "Shape (U) · Shift-U switches Rectangle/Ellipse") : self == .crop ? String(localized: "Crop (C)") : self == .move ? String(localized: "Move / Transform (V)") : self == .hand ? String(localized: "Hand (H)") : String(localized: "Zoom (Z)") }
 }
 
 private struct GIFLayerTimelineState {
@@ -924,8 +924,8 @@ final class EditorSession {
         guard canEditLayers, let document else { return }
         let names = Set(document.layers.map(\.name))
         var number = 1
-        while names.contains("Layer \(number)") { number += 1 }
-        var layer = ImageLayer(name: "Layer \(number)", blankSize: document.size)
+        while names.contains(String(localized: "Layer \(number)")) { number += 1 }
+        var layer = ImageLayer(name: String(localized: "Layer \(number)"), blankSize: document.size)
         layer.parentID = activeLayer?.isGroup == true ? activeLayerID : activeLayer?.parentID
         if let parent = layer.parentID { collapsedGroupIDs.remove(parent) }
         let insertion = newLayerIndex(in: document.layers)
@@ -1169,7 +1169,7 @@ final class EditorSession {
                     }
                     for page in pages.reversed() { insert(page, centeredAt: point) }
                 } else if PSDReader.matches(url) {
-                    beginPSDReading(title: "Open “\(url.lastPathComponent)”?", confirmTitle: "Import")
+                    beginPSDReading(title: String(localized: "Open “\(url.lastPathComponent)”?"), confirmTitle: "Import")
                     let imported: PSDImport
                     do {
                         let parsed = try await ImageImporter.shared.loadPhotoshop(url, remainingPixels: DocumentLimits.documentPixelBudget - usedPixels)
@@ -1302,7 +1302,7 @@ final class EditorSession {
             refreshCanvasPreview?()
         } catch {
             guard gifFrameSelectionRequestID == requestID else { return }
-            importError = "Couldn’t read GIF frame \(index + 1): \(error.localizedDescription)"
+            importError = String(localized: "Couldn’t read GIF frame \(index + 1): \(error.localizedDescription)")
         }
     }
 
@@ -1365,7 +1365,7 @@ final class EditorSession {
     /// One Photoshop artboard's layers as this tab's document, after the conversion report when there's anything in it.
     func importArtboard(_ parsed: PSDDocument, named name: String) async {
         do {
-            beginPSDReading(title: "Open “\(name)”?", confirmTitle: "Import")
+            beginPSDReading(title: String(localized: "Open “\(name)”?"), confirmTitle: "Import")
             let imported: PSDImport
             do {
                 let assets = try await ImageImporter.shared.photoshopAssets(parsed)
@@ -1442,13 +1442,13 @@ final class EditorSession {
     /// every pixel's detail.
     private static func firstLayer(size: CGSize, background: CGColor?) -> ImageLayer {
         guard let background, let context = try? BrushRaster.context(width: Int(size.width), height: Int(size.height), mask: false)
-        else { return ImageLayer(name: "Layer 1", blankSize: size) }
+        else { return ImageLayer(name: String(localized: "Layer 1"), blankSize: size) }
         context.setFillColor(background)
         context.fill(CGRect(origin: .zero, size: size))
         guard let image = context.makeImage(), let thumbnail = try? PixelAdjust.thumbnail(of: image)
-        else { return ImageLayer(name: "Layer 1", blankSize: size) }
-        var layer = ImageLayer(name: "Background", blankSize: size)
-        layer.asset = ImportedImage(image: image, thumbnail: thumbnail, name: "Background")
+        else { return ImageLayer(name: String(localized: "Layer 1"), blankSize: size) }
+        var layer = ImageLayer(name: String(localized: "Background"), blankSize: size)
+        layer.asset = ImportedImage(image: image, thumbnail: thumbnail, name: String(localized: "Background"))
         return layer
     }
 

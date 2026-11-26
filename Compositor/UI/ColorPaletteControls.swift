@@ -101,7 +101,7 @@ struct ColorPaletteControls: View {
         } label: {
             ColorSwatch(color: Color(nsColor: session.paletteColor(background: background).nsColor), size: 24)
         }
-        .buttonStyle(.plain).help(label).accessibilityLabel(label)
+        .buttonStyle(.plain).help(L10n.string(label)).accessibilityLabel(L10n.string(label))
         .onHover { inside in
             if inside, session.colorPicker != nil { CanvasView.eyedropperCursor.set() } else if !inside { NSCursor.arrow.set() }
         }

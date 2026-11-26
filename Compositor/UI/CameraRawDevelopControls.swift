@@ -71,20 +71,20 @@ struct CameraRawDevelopControls: View {
                         decimals: Int, track: CameraRawSliderTrack = .plain, reset: Float, help: String) -> some View {
         let value = Double(develop[keyPath: key])
         return HStack(spacing: 10) {
-            Text(title)
+            Text(L10n.string(title))
                 .frame(minWidth: CameraRawControls.labelWidth, alignment: .leading)
-                .help(help)
+                .help(L10n.string(help))
                 .onTapGesture(count: 2) { set(key, Double(reset), in: range) }
             CameraRawSlider(value: value, range: range, track: track, help: help, step: step,
                             onChange: { new in set(key, (new / step).rounded() * step, in: range) },
                             onReset: { set(key, Double(reset), in: range) })
-            TextField(title, value: Binding(get: { value }, set: { set(key, $0, in: range) }),
+            TextField(L10n.string(title), value: Binding(get: { value }, set: { set(key, $0, in: range) }),
                       format: .number.precision(.fractionLength(0...decimals)))
                 .frame(width: 56).textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing)
-                .help(help)
+                .help(L10n.string(help))
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(title)
+        .accessibilityLabel(L10n.string(title))
     }
 
     private func set(_ key: WritableKeyPath<RawDevelopSettings, Float>, _ value: Double, in range: ClosedRange<Double>) {

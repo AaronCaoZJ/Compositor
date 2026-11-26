@@ -115,6 +115,19 @@ done
 iconutil -c icns -o "$APP/Contents/Resources/AppIcon.icns" "$ICONSET"
 
 cp Compositor/Resources/*.bin "$APP/Contents/Resources/"
+# The string catalog, as the tables Xcode compiles it to: Localizable.strings for each language, which the app then
+# follows macOS's language settings between (docs/localization.md).
+python3 - "$APP/Contents/Resources" <<'PY'
+import json, pathlib, plistlib, sys
+catalog = json.load(open("Compositor/Resources/Localizable.xcstrings"))
+for language in ("en", "zh-Hans"):
+    table = {key: entry["localizations"][language]["stringUnit"]["value"]
+             for key, entry in catalog["strings"].items() if key and language in entry.get("localizations", {})}
+    folder = pathlib.Path(sys.argv[1]) / f"{language}.lproj"
+    folder.mkdir(exist_ok=True)
+    with open(folder / "Localizable.strings", "wb") as file:
+        plistlib.dump(table, file, fmt=plistlib.FMT_BINARY)
+PY
 ditto "$SPARKLE/Sparkle.framework" "$APP/Contents/Frameworks/Sparkle.framework"
 
 echo "== Sign (ad-hoc)"

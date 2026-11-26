@@ -170,9 +170,9 @@ struct ColorPickerSheet: View {
             if let value = Int(text.trimmingCharacters(in: .whitespaces)) { set(value) }
         })
         return GridRow {
-            Text(label).frame(width: 12, alignment: .leading)
+            Text(L10n.string(label)).frame(width: 12, alignment: .leading)
                 .scrubbable(sensitivity: 1, value: channelValue, range: 0...255)
-            TextField(label, text: draft)
+            TextField(L10n.string(label), text: draft)
                 .frame(width: 52)
                 .focused($focusedChannel, equals: index)
                 .onSubmit { finish(true) }
@@ -263,7 +263,7 @@ struct DialogColorSwatch: View {
             ColorSwatch(color: color.swiftUI)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(title)
+        .accessibilityLabel(L10n.string(title))
         .onChange(of: session.colorPicker?.color) { _, _ in session.previewDialogColor() }
         .onDisappear { Self.closePicker(session) }
     }

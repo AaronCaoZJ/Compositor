@@ -195,7 +195,7 @@ struct MovieTimeline: View {
                 player.play()
             } catch {
                 guard !Task.isCancelled else { return }
-                failure = "Movie unavailable. Right-click the timeline to relink and play."
+                failure = String(localized: "Movie unavailable. Right-click the timeline to relink and play.")
             }
             job = nil
         }
@@ -235,7 +235,7 @@ struct MovieTimeline: View {
                     if requested == target { break }
                 }
             } catch {
-                if !Task.isCancelled { failure = "Movie unavailable. Right-click the timeline to relink and scrub." }
+                if !Task.isCancelled { failure = String(localized: "Movie unavailable. Right-click the timeline to relink and scrub.") }
             }
             if !Task.isCancelled { scrubJob = nil }
         }
@@ -269,7 +269,7 @@ struct MovieTimeline: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 if keepFrame { stopPlayback() }
-                failure = "Movie unavailable. Right-click the timeline to relink and scrub."
+                failure = String(localized: "Movie unavailable. Right-click the timeline to relink and scrub.")
                 requested = nil
                 session.moviePreview = nil
             }

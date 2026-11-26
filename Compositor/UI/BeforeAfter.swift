@@ -6,12 +6,12 @@ import SwiftUI
 struct BeforeBadge: NSViewRepresentable {
     let session: EditorSession
     func makeNSView(context: Context) -> CanvasPillView {
-        CanvasPillView(symbol: "square.split.2x1", closeLabel: "Show the edit",
-                       closeHelp: "Show the picture with the panel's changes again (\\)") { [session] in session.toggleBeforeAfter() }
+        CanvasPillView(symbol: "square.split.2x1", closeLabel: String(localized: "Show the edit"),
+                       closeHelp: String(localized: "Show the picture with the panel's changes again (\\)")) { [session] in session.toggleBeforeAfter() }
     }
     func updateNSView(_ view: CanvasPillView, context: Context) {
-        view.title = "Before"
-        view.detail = "\\ shows After"
+        view.title = String(localized: "Before")
+        view.detail = String(localized: "\\ shows After")
     }
 }
 
