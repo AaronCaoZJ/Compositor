@@ -18,6 +18,9 @@ extension EditorSession {
         developCameraRawDraft(edit)
     }
 
+    /// A layer kept as a recipe has no develop to preview from as its panel opens: this makes one.
+    func beginCameraRawDevelop(_ edit: FilterEdit) { developCameraRawDraft(edit) }
+
     /// One develop at a time, the newest settings next, as `renderFilterPreview` renders.
     private func developCameraRawDraft(_ edit: FilterEdit) {
         guard filterEdit === edit, !edit.committing, edit.rawDraftTask == nil, let developer = edit.rawDeveloper,
@@ -59,6 +62,53 @@ extension EditorSession {
             } else {
                 self.updateFilter(edit.settings, preview: edit.preview)
             }
+        }
+    }
+}
+
+/// Undo for a RAW layer kept as a recipe. The history holds such a layer's earlier pixels as a small stand-in
+/// (`DocumentHistory.slim`, `RawOrigins.standIn`), since the recipe makes them again.
+extension EditorSession {
+    /// A step in the history returned to may show a RAW layer by its stand-in. Its pixels are made again from the
+    /// recipe, in the time OK took to make them, and take the stand-in's place in the document and in every step that
+    /// holds it. The document is held meanwhile, as for any long operation, so nothing is done to the stand-in
+    /// itself; Undo and Redo still work, and going on to another step drops the pixels this one was waiting for.
+    func rehydrateRawLayers() {
+        let held = rawRehydration != nil
+        rawRehydration?.cancel()
+        rawRehydration = nil
+        var waiting: [(standIn: CGImage, origin: RawOrigin, name: String)] = []
+        for layer in document?.layers ?? [] {
+            guard let asset = layer.asset, let source = RawOrigins.shared.standsFor(asset),
+                  !waiting.contains(where: { $0.standIn === asset.image }) else { continue }
+            waiting.append((asset.image, source.origin, source.name))
+        }
+        guard !waiting.isEmpty else {
+            if held { isProjectBusy = false }
+            return
+        }
+        isProjectBusy = true
+        rawRehydration = Task { @MainActor [weak self] in
+            for item in waiting {
+                let origin = item.origin, name = item.name
+                let work = Task.detached(priority: .userInitiated) { try? origin.render(name: name) }
+                let made = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+                // Another step was gone to: its own pixels are being made, and it holds the document now.
+                guard let self, !Task.isCancelled else { return }
+                guard let made else { self.brushError = String(localized: "Couldn’t develop the RAW file again."); continue }
+                RawOrigins.shared.register(made, from: origin)
+                self.history.replaceAssets { $0.image === item.standIn ? made : nil }
+                if var document = self.document {
+                    for index in document.layers.indices where document.layers[index].asset?.image === item.standIn {
+                        document.layers[index].asset = made
+                    }
+                    self.document = document
+                }
+                self.brushRevision += 1
+            }
+            guard let self, !Task.isCancelled else { return }
+            self.rawRehydration = nil
+            self.isProjectBusy = false
         }
     }
 }

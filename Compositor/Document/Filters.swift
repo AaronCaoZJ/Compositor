@@ -581,7 +581,7 @@ final class FilterEdit {
     var previewError: String?
     var preparing = false
     /// Add Noise's grain, fixed while the panel is open so changing Amount doesn't reshuffle it.
-    let seed = UInt32.random(in: .min ... .max)
+    private(set) var seed = UInt32.random(in: .min ... .max)
     /// Camera Raw panel eyes. Off drops that group's amounts from the preview and from OK, without clearing the sliders.
     var showsCameraRawLight = true
     var showsCameraRawColor = true
@@ -696,8 +696,12 @@ final class FilterEdit {
     @ObservationIgnored var rawFullTask: Task<Void, Never>?
     /// `previewSource` is an older develop than the RAW section asks for: only a draft shows what it asks for.
     var rawSourceIsStale: Bool { rawSettings != nil && rawSourceSettings != rawSettings }
-    /// The RAW section has moved from what the layer was developed with, so OK develops the file again.
-    var redevelopsRaw: Bool { rawSettings != nil && rawSettings != rawOrigin?.settings }
+    /// OK develops the file again: the RAW section has moved from what the layer was developed with, or the layer's
+    /// pixels have Camera Raw's sliders in them already and aren't a develop to apply them to.
+    var redevelopsRaw: Bool { rawSettings != nil && (rawSettings != rawOrigin?.settings || rawOrigin?.recipe != nil) }
+    /// A layer with Camera Raw's sliders in its pixels, just opened: there is nothing to preview from until the file
+    /// has been developed, and meanwhile the layer shows as it is, which is how it will look.
+    var awaitsRawSource: Bool { rawSettings != nil && rawSourceSettings == nil && rawDraftSettings == nil }
     /// Volumetric Light's first preview, held for the depth model (`beginFilter`).
     @ObservationIgnored var waitsForDepth = false
     /// Previews render from a copy no larger than this on its longest side.
@@ -875,8 +879,10 @@ final class FilterEdit {
     func developsRaw(from origin: RawOrigin) {
         rawOrigin = origin
         rawSettings = origin.settings
-        rawSourceSettings = origin.settings
-        rawDraftSettings = origin.settings
+        // The layer's pixels are the develop, and the preview's source already, unless the sliders are in them too.
+        rawSourceSettings = origin.recipe == nil ? origin.settings : nil
+        rawDraftSettings = rawSourceSettings
+        if let recipe = origin.recipe { settings.cameraRaw = recipe; seed = origin.seed }
         rawDeveloper = RawDeveloper(origin)
     }
 
@@ -1032,8 +1038,10 @@ extension EditorSession {
             if kind == .cameraRaw {
                 Task.detached(priority: .userInitiated) { _ = CameraRawTables.tables; _ = CameraRawShadows.tables }
             }
-            // And the RAW file decoded, about a second: after it, a RAW control's change renders in milliseconds.
-            if let developer = edit.rawDeveloper, let developed = edit.rawSettings {
+            // And the RAW file decoded, about a second: after it, a RAW control's change renders in milliseconds. A
+            // layer kept as a recipe is developed for its preview straight away.
+            if edit.awaitsRawSource { beginCameraRawDevelop(edit) }
+            else if let developer = edit.rawDeveloper, let developed = edit.rawSettings {
                 Task.detached(priority: .userInitiated) { _ = await developer.develop(developed, limit: FilterEdit.draftLimit) }
             }
             // An automatic filter commits what its preview made, so it still needs one.
@@ -1094,6 +1102,8 @@ extension EditorSession {
             catch { brushError = error.localizedDescription }
         }
         if previewAdjustmentEditing(preview: preview) { return }
+        // The file is still being developed: its arrival renders whatever the controls say by then.
+        if edit.awaitsRawSource { brushRevision += 1; return }
         if edit.kind.isAutomatic, edit.preparedPreview != nil, edit.preparedSettings == edit.settings { brushRevision += 1; return }
         guard preview else {
             // Camera Raw's render is put aside, not dropped: Before/After flips between it and the layer with nothing
@@ -1331,6 +1341,10 @@ extension EditorSession {
             || (edit.kind == .grain && edit.settings.grain.amount == 0)
             // (A new develop of the RAW file is a change by itself, with every slider below it at rest.)
             || (edit.kind == .cameraRaw && rendered.cameraRaw.isIdentity && !edit.redevelopsRaw) { cancelFilter(); return }
+        // A layer kept as a recipe, opened and left as it was: nothing to render again.
+        if let origin = edit.rawOrigin, let recipe = origin.recipe, edit.rawSettings == origin.settings, rendered.cameraRaw == recipe {
+            cancelFilter(); return
+        }
         edit.committing = true
         edit.previewTask?.cancel()
         edit.refineTask?.cancel()
@@ -1348,27 +1362,20 @@ extension EditorSession {
         // Remove Background masks the background out rather than erasing it, so it can be brought back at any time
         // by painting the mask, disabling it, or deleting it.
         if edit.kind == .removeBackground { await commitBackgroundMask(edit); return }
-        // Camera Raw's RAW section moved: the file is developed once more, whole and at 16 bits, and the rest of the
-        // panel is applied to that in place of the layer's pixels. `edit.original` stays what the layer still holds.
-        var source = edit.original
-        var developedFrom: RawOrigin?
-        if edit.redevelopsRaw, let developer = edit.rawDeveloper, let origin = edit.rawOrigin, let wanted = edit.rawSettings {
-            let name = edit.original.name
-            let developed = await Task.detached(priority: .userInitiated) { () -> ImportedImage? in
-                guard let image = await developer.develop(wanted, sixteenBit: true, fresh: true) else { return nil }
-                return try? DeepLayer.asset(image, name: name)
-            }.value
-            guard let developed else { brushError = "Couldn’t develop the RAW file again."; return }
-            source = developed
-            developedFrom = origin.developed(with: wanted)
+        // A RAW layer is made from its recipe: the file, what it is developed with, and the sliders. By the routine
+        // that makes its pixels again when a step in the history is returned to, so undo brings back what OK made.
+        let recipe = edit.rawOrigin.flatMap { origin in
+            edit.rawSettings.map {
+                origin.developed(with: $0, recipe: rendered.cameraRaw.isIdentity ? nil : rendered.cameraRaw, seed: edit.seed)
+            }
         }
         // A blur that keeps the layer's transparency has no use for room around it (opening the panel may have made
         // some for the blur it started with): it's applied to the layer as it was, which leaves its size alone.
         let keepsOutline = edit.kind == .gaussianBlur && edit.settings.preserveTransparency
-        let mapping = keepsOutline || developedFrom != nil
-            ? BrushRaster.pixelToDocument(edit.transform, width: source.image.width, height: source.image.height)
+        let mapping = keepsOutline
+            ? BrushRaster.pixelToDocument(edit.transform, width: edit.original.image.width, height: edit.original.image.height)
             : edit.mapping
-        var job = FilterJob(kind: edit.kind, image: keepsOutline ? source.image : edit.grownImage ?? source.image,
+        var job = FilterJob(kind: edit.kind, image: keepsOutline ? edit.original.image : edit.grownImage ?? edit.original.image,
                             settings: edit.renderSettings(), scale: 1, selection: edit.selection, mapping: mapping, seed: edit.seed)
         job.canvas = edit.canvas
         job.canvasSides = edit.canvasSides
@@ -1381,14 +1388,13 @@ extension EditorSession {
             // Content-Aware Fill makes new pixels from scratch; Dither's result is a few levels by design (three runs read
             // between would mix its patterns into colors); Remove Background would find the subject three times over.
             let rasterizes = edit.kind == .contentAwareFill || edit.kind == .dither || edit.kind == .removeBackground
-            let deep = rasterizes ? nil : try DeepLayer.flattened(source)
+            let deep = rasterizes ? nil : try DeepLayer.flattened(edit.original)
             let deepGrid = keepsOutline ? nil : edit.grownImage.flatMap { grownImage in
                 edit.grownInside.map { (size: CGSize(width: grownImage.width, height: grownImage.height), inside: $0) }
             }
-            // Only the RAW develop changed: the new develop is the result as it stands.
-            let developedOnly = developedFrom != nil && rendered.cameraRaw.isIdentity ? source : nil
+            let recipeName = recipe?.recipe == nil ? edit.original.name : edit.kind.rawValue
             let made = try await Task.detached(priority: .userInitiated) { () -> (asset: ImportedImage, transform: LayerTransform?) in
-                if let developedOnly { return (developedOnly, grown) }
+                if let recipe { return (try recipe.render(name: recipeName), grown) }
                 // Exposure on an HDR layer, exactly: turned down, it brings highlights into view.
                 if let deep, DeepLayer.isHDR(deep), job.kind == .exposure {
                     var result = try DeepLayer.exposure(deep, job.settings.exposure)
@@ -1458,11 +1464,9 @@ extension EditorSession {
             beginEdit(edit.kind.rawValue)
             document?.layers[index] = edited
             endEdit()
-            // Only the develop changed: the layer is still what the file develops to, now with these settings, and
-            // Camera Raw's RAW section is there the next time.
-            if let developedFrom, rendered.cameraRaw.isIdentity, let made = edited.asset {
-                RawOrigins.shared.register(made, from: developedFrom)
-            }
+            // A RAW layer stays one: its new pixels are remembered as the file, what it was developed with and the
+            // sliders applied, so Camera Raw opens on it again with all of them where they are now.
+            if let recipe, let made = document?.layers[index].asset { RawOrigins.shared.register(made, from: recipe) }
         } catch { brushError = error.localizedDescription }
     }
 

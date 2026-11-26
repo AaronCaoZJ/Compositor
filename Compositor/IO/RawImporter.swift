@@ -187,8 +187,10 @@ nonisolated enum RawImporter {
     }
 }
 
-/// The RAW file a layer's pixels were developed from, and the settings they were developed with. Camera Raw develops
-/// the file again when its RAW controls move, where the latitude the layer no longer has still is (`RawDeveloper`).
+/// The RAW file a layer's pixels were developed from, and what made them from it: the settings it was developed
+/// with, and Camera Raw's own sliders if they have been applied on top. A layer's pixels kept as that recipe, as
+/// Lightroom keeps a photo: Camera Raw opens on the layer with every control where it was left and renders from the
+/// file again, so nothing it did is ever baked in (`RawDeveloper`, `FilterEdit.rawSettings`).
 /// The file's own bytes, not its place on disk: that may be a dropped file's short-lived copy, or somewhere the
 /// sandbox lets the app read only while it is being imported.
 nonisolated final class RawOrigin: @unchecked Sendable {
@@ -196,11 +198,17 @@ nonisolated final class RawOrigin: @unchecked Sendable {
     /// The file's type, which tells the engine whose format the bytes are.
     let type: String?
     let settings: RawDevelopSettings
+    /// Camera Raw's sliders, applied to the develop to make the layer's pixels. Nil: the pixels are the develop itself.
+    let recipe: CameraRawSettings?
+    /// What the sliders' grain was drawn with, so that made again it falls where it did.
+    let seed: UInt32
 
-    init(data: Data, type: String?, settings: RawDevelopSettings) {
+    init(data: Data, type: String?, settings: RawDevelopSettings, recipe: CameraRawSettings? = nil, seed: UInt32 = 0) {
         self.data = data
         self.type = type
         self.settings = settings
+        self.recipe = recipe
+        self.seed = seed
     }
 
     /// The file mapped rather than read, where that is safe, so a 90 MB file costs no memory until it is developed.
@@ -209,12 +217,36 @@ nonisolated final class RawOrigin: @unchecked Sendable {
         self.init(data: data, type: UTType(filenameExtension: url.pathExtension)?.identifier, settings: settings)
     }
 
-    func developed(with settings: RawDevelopSettings) -> RawOrigin { RawOrigin(data: data, type: type, settings: settings) }
+    func developed(with settings: RawDevelopSettings, recipe: CameraRawSettings? = nil, seed: UInt32 = 0) -> RawOrigin {
+        RawOrigin(data: data, type: type, settings: settings, recipe: recipe, seed: seed)
+    }
+
+    /// The layer these make: the file developed whole at 16 bits by a decoder of its own, and the recipe's sliders
+    /// applied the way OK applies a filter to a 16-bit layer. The one routine that makes a RAW layer's pixels, when OK
+    /// is pressed and when a step in the history is returned to, so the two can't come out differently.
+    func render(name: String) throws -> ImportedImage {
+        // Stopped between its passes when the step it is for has been left again (`rehydrateRawLayers`).
+        try Task.checkCancellation()
+        guard let filter = CIRAWFilter(imageData: data, identifierHint: type),
+              let developed = RawImporter.render(filter, settings: settings, sixteenBit: true) else { throw ImageImportError.unreadable }
+        let source = try DeepLayer.asset(developed, name: name)
+        guard let recipe, let deep = source.deep else { return source }
+        var applied = FilterSettings()
+        applied.cameraRaw = recipe
+        let job = FilterJob(kind: .cameraRaw, image: source.image, settings: applied, scale: 1, selection: nil, mapping: .identity, seed: seed)
+        let made = try DeepLayer.run(deep, mixesChannels: FilterKind.cameraRaw.mixesChannels) { half in
+            try Task.checkCancellation()
+            var run = job
+            run.image = half
+            return try PixelFilter.run(run)
+        }
+        return try DeepLayer.asset(made, name: name)
+    }
 }
 
-/// Which pixels came straight from which RAW file. Told by the images themselves rather than kept on the layer: once
-/// anything else is done to a layer its images are new ones, which aren't found here, and undone they are the old ones
-/// again. Nothing is held: an entry goes when its images do. Not saved with a project.
+/// Which pixels were made from which RAW file, and how. Told by the images themselves rather than kept on the layer:
+/// once anything but Camera Raw is done to a layer its images are new ones, which aren't found here, and undone they
+/// are the old ones again. Nothing is held: an entry goes when its images do. Not saved with a project.
 final class RawOrigins {
     static let shared = RawOrigins()
     private struct Entry {
@@ -235,6 +267,38 @@ final class RawOrigins {
     func origin(of asset: ImportedImage?) -> RawOrigin? {
         guard let asset, asset.raster == nil, let deep = asset.deep else { return nil }
         return entries.first { $0.image === asset.image && $0.deep === deep }?.origin
+    }
+
+    private struct StandIn {
+        weak var image: CGImage?
+        let origin: RawOrigin
+        let name: String
+    }
+    private var standIns: [StandIn] = []
+    /// A stand-in's longest side: enough to show the layer well, fitted to a window, for the seconds its pixels take
+    /// to make again.
+    static let standInLimit: CGFloat = 2048
+
+    /// A small copy to hold in the history in a RAW layer's place (`DocumentHistory.slim`), remembered with what
+    /// makes the layer's pixels again: 11 MB where a 42-megapixel layer's 16-bit pixels and their 8-bit copy are 480.
+    /// Nil for any other layer, and for one no larger than its stand-in would be.
+    func standIn(for asset: ImportedImage) -> ImportedImage? {
+        guard let origin = origin(of: asset) else { return nil }
+        let factor = Self.standInLimit / CGFloat(max(asset.image.width, asset.image.height))
+        guard factor < 1 else { return nil }
+        let width = max(1, Int(CGFloat(asset.image.width) * factor)), height = max(1, Int(CGFloat(asset.image.height) * factor))
+        guard let context = try? BrushRaster.context(width: width, height: height, mask: false) else { return nil }
+        BrushRaster.draw(asset.image, in: CGRect(x: 0, y: 0, width: width, height: height), mask: false, context: context)
+        guard let small = context.makeImage() else { return nil }
+        standIns.removeAll { $0.image == nil }
+        standIns.append(StandIn(image: small, origin: origin, name: asset.name))
+        return ImportedImage(image: small, thumbnail: asset.thumbnail, name: asset.name)
+    }
+
+    /// What makes the pixels a stand-in holds the place of; nil for anything that isn't one.
+    func standsFor(_ asset: ImportedImage?) -> (origin: RawOrigin, name: String)? {
+        guard let asset, asset.deep == nil, asset.raster == nil else { return nil }
+        return standIns.first { $0.image === asset.image }.map { ($0.origin, $0.name) }
     }
 }
 

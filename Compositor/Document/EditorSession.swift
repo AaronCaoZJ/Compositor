@@ -831,11 +831,21 @@ final class EditorSession {
         }
     }
     var renamingLayerID: UUID? { didSet { resumeFileRequests() } }
-    let history = DocumentHistory()
+    let history: DocumentHistory = {
+        let history = DocumentHistory()
+        // A RAW layer kept as a recipe is held in the history by a small stand-in, its pixels made again when a step
+        // is returned to (`rehydrateRawLayers`): such a step costs a few megabytes to keep, not hundreds.
+        history.slim = { RawOrigins.shared.standIn(for: $0) }
+        return history
+    }()
+    /// A RAW layer's pixels being made again for the step just returned to (`rehydrateRawLayers`). The document is
+    /// held while it runs, but Undo and Redo are not: another step is gone to at once, and this is dropped.
+    @ObservationIgnored var rawRehydration: Task<Void, Never>?
     var isModified: Bool { history.isModified }
     var canUseHistory: Bool {
         _ = showsBusy
-        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && !isProjectBusy && !isImporting && brushStroke == nil && warpStroke == nil && levels == nil && !showsNewDocument && !showsImporter && renamingLayerID == nil && importError == nil && transformEdit == nil && !showsConversionSheet
+        // (Busy making a RAW layer's pixels again for the step just gone to is no bar to going to another.)
+        return selectionAmountOperation == nil && colorRange == nil && textDraft == nil && (!isProjectBusy || rawRehydration != nil) && !isImporting && brushStroke == nil && warpStroke == nil && levels == nil && !showsNewDocument && !showsImporter && renamingLayerID == nil && importError == nil && transformEdit == nil && !showsConversionSheet
     }
     var canUndo: Bool { canUseHistory && (history.canUndo || gradientEdit != nil) }
     var canRedo: Bool { canUseHistory && history.canRedo }
@@ -865,6 +875,7 @@ final class EditorSession {
         activeLayerID = snapshot.activeLayerID
         isMaskSelected = keepMaskTarget && activeLayer?.mask != nil
         if changedCanvas, let document { viewport.fit(documentSize: document.size) }
+        rehydrateRawLayers()
     }
 
     /// Nestable transaction boundary; future tools can group a complete gesture.

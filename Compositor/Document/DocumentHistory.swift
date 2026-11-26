@@ -109,7 +109,9 @@ final class DocumentHistory {
     }
 
     /// Bytes retained only by history, excluding images in the live document.
-    func retainedBytes(current: CanvasDocument?) -> Int {
+    func retainedBytes(current: CanvasDocument?) -> Int { retainedBytes(of: past + future, current: current) }
+
+    private func retainedBytes(of entries: [Entry], current: CanvasDocument?) -> Int {
         var seen = Set<ObjectIdentifier>()
         var seenSources = Set<ObjectIdentifier>()
         for layer in current?.layers ?? [] {
@@ -122,7 +124,7 @@ final class DocumentHistory {
             }
         }
         var bytes = 0
-        for entry in past + future {
+        for entry in entries {
             for snapshot in [entry.before, entry.after] {
                 for layer in snapshot.document?.layers ?? [] {
                     for asset in Self.assets(of: layer) {
@@ -143,10 +145,72 @@ final class DocumentHistory {
     }
 
     private func trim(current: CanvasDocument?) {
-        while past.count + future.count > entryLimit || retainedBytes(current: current) > retainedByteLimit {
-            if !past.isEmpty { past.removeFirst() }
+        slimDown(current: current)
+        while past.count + future.count > entryLimit {
+            if !past.isEmpty { past.removeFirst() } else { future.removeFirst() }
+        }
+        // Over the pixels it may hold, a step goes from one end: the oldest undo, unless the farthest redo gives
+        // back more. An undone filter's result is hundreds of megabytes where the oldest steps may each be a RAW
+        // layer's stand-in, and dropping those first would empty the history without making the room.
+        while true {
+            let held = retainedBytes(of: past + future, current: current)
+            guard held > retainedByteLimit else { break }
+            let withoutOldest = past.isEmpty ? held : retainedBytes(of: Array(past.dropFirst()) + future, current: current)
+            let withoutFarthest = future.isEmpty ? held : retainedBytes(of: past + Array(future.dropFirst()), current: current)
+            if !future.isEmpty, withoutFarthest < withoutOldest { future.removeFirst() }
+            else if !past.isEmpty { past.removeFirst() }
             else if !future.isEmpty { future.removeFirst() }
             else { break }
         }
+    }
+
+    /// A small stand-in for an asset whose pixels can be made again from what it stands for (a RAW layer kept as a
+    /// recipe: `RawOrigins.standIn`), or nil for one that can't. History then holds the stand-in wherever the document
+    /// no longer shows the asset, so such a step costs a few megabytes to keep where its pixels would cost hundreds;
+    /// returning to the step, the pixels are made again and put back with `replaceAssets`.
+    @ObservationIgnored var slim: ((ImportedImage) -> ImportedImage?)?
+
+    /// Before anything is counted or dropped: every asset `current` doesn't show, and `slim` has a stand-in for, gives
+    /// way to it in every step, the one stand-in wherever the asset was, so steps still tell by their images which
+    /// layers they share.
+    private func slimDown(current: CanvasDocument?) {
+        guard let slim else { return }
+        var shown = Set<ObjectIdentifier>()
+        for layer in current?.layers ?? [] { if let image = layer.asset?.image { shown.insert(ObjectIdentifier(image)) } }
+        var standIns: [ObjectIdentifier: ImportedImage] = [:]
+        var asked = Set<ObjectIdentifier>()
+        replaceAssets { asset in
+            let image = ObjectIdentifier(asset.image)
+            if shown.contains(image) { return nil }
+            if let standIn = standIns[image] { return standIn }
+            guard asked.insert(image).inserted, let standIn = slim(asset) else { return nil }
+            standIns[image] = standIn
+            return standIn
+        }
+    }
+
+    /// Puts another asset in a layer's place in every step, as `replacement` says; nil leaves one as it is.
+    func replaceAssets(_ replacement: (ImportedImage) -> ImportedImage?) {
+        var any = false
+        func replaced(_ snapshot: Snapshot) -> Snapshot {
+            guard var document = snapshot.document else { return snapshot }
+            var changed = false
+            for index in document.layers.indices {
+                guard let asset = document.layers[index].asset, let other = replacement(asset) else { continue }
+                document.layers[index].asset = other
+                changed = true
+            }
+            guard changed else { return snapshot }
+            any = true
+            return Snapshot(document: document, activeLayerID: snapshot.activeLayerID, revision: snapshot.revision)
+        }
+        let earlier = past.map { Entry(name: $0.name, before: replaced($0.before), after: replaced($0.after)) }
+        let later = future.map { Entry(name: $0.name, before: replaced($0.before), after: replaced($0.after)) }
+        let open = pending.map(replaced)
+        // Left alone when nothing changed, which is nearly every time: these are watched.
+        guard any else { return }
+        past = earlier
+        future = later
+        pending = open
     }
 }
