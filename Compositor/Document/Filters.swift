@@ -283,6 +283,43 @@ nonisolated enum PixelFilter {
     /// distance; Core Image tapers like a Gaussian whose spread is about its radius (measured on a
     /// single dot). An even streak of length d spreads d / √12, so this radius matches its spread.
     static let motionRadiusPerPixel = 1 / 12.0.squareRoot()
+
+    /// `CIMotionBlur` with what it loses given back. On macOS 15 the weights along its streak add up to a little
+    /// under one, 1 to 3% under as the radius goes, so all it blurs comes out that much fainter and a solid picture
+    /// that much see-through. What it leaves of plain white is the share it keeps, at any angle, and the streak is
+    /// scaled back up by it. Where it loses nothing, as on macOS 26, this is `CIMotionBlur` alone.
+    static func motionBlurred(_ image: CIImage, radius: Double, angle: Double) -> CIImage {
+        let streaked = image.applyingFilter("CIMotionBlur", parameters: [kCIInputRadiusKey: radius, kCIInputAngleKey: angle])
+        let kept = motionShareKept(radius)
+        guard kept > 0, abs(1 - kept) > 0.0001 else { return streaked }
+        let back = 1 / kept
+        return streaked.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: back, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: back, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: back, w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: back),
+        ])
+    }
+
+    /// The shares measured: a Motion Blur layer redraws at the same radius on every canvas frame.
+    private static let motionLock = NSLock()
+    nonisolated(unsafe) private static var motionShares: [Double: Double] = [:]
+
+    /// The share of what it blurs that `CIMotionBlur` keeps at `radius`: the alpha it leaves of plain white, at floats.
+    private static func motionShareKept(_ radius: Double) -> Double {
+        guard radius > 0 else { return 1 }
+        if let kept = motionLock.withLock({ motionShares[radius] }) { return kept }
+        let white = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .applyingFilter("CIMotionBlur", parameters: [kCIInputRadiusKey: radius, kCIInputAngleKey: 0.0])
+        var pixel = [Float](repeating: 1, count: 4)
+        PixelAdjust.ciContext.render(white, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                     format: .RGBAf, colorSpace: nil)
+        let kept = Double(pixel[3])
+        motionLock.withLock {
+            // A drag of Distance asks for a radius a frame.
+            if motionShares.count >= 512 { motionShares.removeAll() }
+            motionShares[radius] = kept
+        }
+        return kept
+    }
     /// Remove Distortion at ±100 moves the image's corners by this share of their distance from the center.
     static let lensStrength = 0.35
 
@@ -394,10 +431,9 @@ nonisolated enum PixelFilter {
                                                         light: CGPoint(x: pixel.x, y: Double(height) - pixel.y)), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
-            let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [
-                kCIInputRadiusKey: settings.distance * job.scale * motionRadiusPerPixel,
-                kCIInputAngleKey: settings.angle * .pi / 180,
-            ])
+            let streaked = motionBlurred(extending(edges, past: job.canvasSides, of: extent),
+                                         radius: settings.distance * job.scale * motionRadiusPerPixel,
+                                         angle: settings.angle * .pi / 180)
             image = try render(streaked.cropped(to: extent), job: job)
         case .addNoise:
             // C, not Core Image: its random generator is uniform only, and Gaussian noise is needed too.
