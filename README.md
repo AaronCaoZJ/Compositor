@@ -1,32 +1,79 @@
-# Compositor
+# 🍴 Compositor for macOS 15
 
-## About this fork
+_Compositor on macOS 15, in English and 简体中文, with a Camera Raw that works from the RAW file._
 
-This is a fork of [robbietilton/Compositor](https://github.com/robbietilton/Compositor), kept on top of its 1.7.2; the work is done on the `macos15` branch. It runs on macOS 15, speaks Simplified Chinese, and gives Camera Raw the RAW file to work from. It isn't the official app: there is no download and no automatic update, and its problems aren't upstream's to answer for. Below this section the README is upstream's, unchanged. Where the two disagree, on the macOS version and on translations, this section is what holds for the fork.
+> [!IMPORTANT]
+> **This is a fork of [robbietilton/Compositor](https://github.com/robbietilton/Compositor)**, kept on top of its 1.7.2. It isn't the official app: there is no download and no automatic update, and its problems aren't upstream's to answer for.
+>
+> This page has two parts. **The first is what this fork adds.** The second, below the line marked 📜, is upstream's own README, unchanged.
 
-To build it, run `scripts/build-macos15.sh` and open `build/macos15/release/Compositor.app`. The Command Line Tools are enough; Xcode isn't needed. The app is signed ad hoc, for the Mac that built it.
+## 👀 At a glance
 
-### Features added
-- **Runs on macOS 15.4 and later**, where upstream needs macOS 26. Controls that only macOS 26 draws, Liquid Glass among them, take macOS 15's own look. RAW Highlight Recovery is the one feature left out: the system's decoder has it from macOS 26.
-- **Simplified Chinese interface**, following the language macOS is set to for the app, with Adobe's own Chinese terms for what Photoshop, Camera Raw and Lightroom have too. It starts from the translation in [emptykid/Compositor](https://github.com/emptykid/Compositor); [docs/localization.md](docs/localization.md) says how to add to it.
-- **A RAW section in Camera Raw.** On a layer that is still what its RAW file developed to, Exposure, Temperature, Tint, Boost, Noise Reduction and Lens Correction develop the file again, so a blown highlight comes back from the sensor's data rather than from pixels already clipped.
-- **RAW layers stay recipes.** OK keeps the file and the settings with the layer: open Camera Raw on it again and every slider is where it was left, to carry on from. A saved project keeps the recipe too, with a read-only reference to the RAW file rather than a copy of it: the file is never written, and with it moved away the project still opens, with the layer's pixels.
-- **Lightroom's keys.** ← and → move the slider under the pointer, by a larger step with Shift and the smallest with Option. `\` switches between before and after while a filter's panel is previewing.
+| | Upstream | This fork |
+|---|---|---|
+| 🖥️ **macOS** | 26 or later | **15.4 or later** |
+| 🌐 **Interface** | English | English and **简体中文** |
+| 📷 **Camera Raw on a RAW photo** | adjusts the pixels already developed | **develops the RAW file again**, and a project keeps the recipe |
+| ⌨️ **Keys in a filter's panel** | — | **← →** on the slider under the pointer, **`\`** for before and after |
+| 📦 **Getting it** | download, Homebrew, automatic updates | **build it yourself**, with one script |
 
-### Fixes
-- Tonal Contrast layers were drawn out of place on the canvas on macOS 15, by as far as their blur reaches, so the canvas and the export disagreed.
-- Motion Blur left a solid picture 1 to 3% see-through on macOS 15.
-- Camera Raw opened with a number field focused, which took the arrow keys from its sliders.
+## 🛠️ Build it
 
-### Design
-- **Camera Raw previews in two passes** on a layer of 8 megapixels or more: a draft from a copy 2560 pixels long while a slider moves, then the whole frame 160 ms after it rests. On a 42-megapixel layer a Light slider's frame went from 73 ms to 17, and one with Shadows and Clarity on from 1.1 s to about 0.1 s.
-- **One RAW decoder is kept for the panel**: a draft develops in about 10 ms and the whole 42-megapixel frame in about 0.2 s.
-- **Undo is sized to the Mac**: an eighth of its memory, where it was a fixed 256 MB that one 42-megapixel 16-bit layer overflowed, leaving nothing to undo. Over that, a RAW layer's older steps are kept as small stand-ins and developed again when returned to, the farthest first, so the nearest steps come back at once.
-- **Before and after are both kept**, so `\` switches between them without rendering again.
+You need an Apple silicon Mac on macOS 15.4 or later, and the Command Line Tools (`xcode-select --install`). Xcode isn't needed.
 
-Checked on macOS 15.6 with a Sony A7R III's 42-megapixel RAW files: all the unit tests pass.
+```sh
+git clone https://github.com/AaronCaoZJ/Compositor.git
+cd Compositor
+scripts/build-macos15.sh
+open build/macos15/release/Compositor.app
+```
+
+The app is signed ad hoc, for the Mac that built it. To use it in Chinese, choose the language for Compositor in System Settings › General › Language & Region › Applications, then open it again.
+
+## ✨ Features added
+
+- 🖥️ **Runs on macOS 15.4 and later.** Controls that only macOS 26 draws, Liquid Glass among them, take macOS 15's own look. RAW Highlight Recovery is the one feature left out: the system's decoder has it from macOS 26.
+- 🌐 **Simplified Chinese interface**, following the language macOS is set to for the app, with Adobe's own Chinese terms for what Photoshop, Camera Raw and Lightroom have too. It starts from the translation in [emptykid/Compositor](https://github.com/emptykid/Compositor); [docs/localization.md](docs/localization.md) says how to add to it.
+- 📷 **A RAW section in Camera Raw.** On a layer that is still what its RAW file developed to, Exposure, Temperature, Tint, Boost, Noise Reduction and Lens Correction develop the file again, so a blown highlight comes back from the sensor's data rather than from pixels already clipped.
+- 🧾 **RAW layers stay recipes.** OK keeps the file and the settings with the layer: open Camera Raw on it again and every slider is where it was left, to carry on from.
+- 💾 **A saved project keeps the recipe too**, with a read-only reference to the RAW file rather than a copy of it. The file is never written, and with it moved away the project still opens, with the layer's pixels.
+- ⌨️ **Lightroom's keys.** ← and → move the slider under the pointer, by a larger step with Shift and the smallest with Option. `\` switches between before and after while a filter's panel is previewing.
+
+## 🐛 Fixes
+
+- 🎚️ Tonal Contrast layers were drawn out of place on the canvas on macOS 15, by as far as their blur reaches, so the canvas and the export disagreed.
+- 💨 Motion Blur left a solid picture 1 to 3% see-through on macOS 15.
+- 🔢 Camera Raw opened with a number field focused, which took the arrow keys from its sliders.
+
+## ⚙️ Design
+
+- ⚡ **Camera Raw previews in two passes** on a layer of 8 megapixels or more: a draft from a copy 2560 pixels long while a slider moves, then the whole frame 160 ms after it rests.
+- 🎞️ **One RAW decoder is kept for the panel**: a draft develops in about 10 ms, and the whole 42-megapixel frame in about 0.2 s.
+- ↩️ **Undo is sized to the Mac**: an eighth of its memory, where it was a fixed 256 MB. Over that, a RAW layer's older steps are kept as small stand-ins and developed again when returned to, the farthest first, so the nearest steps come back at once.
+- 🔀 **Before and after are both kept**, so `\` switches between them without rendering again.
+
+Measured on a 42-megapixel layer:
+
+| | Before | After |
+|---|---|---|
+| A Light slider's frame | 73 ms | **17 ms** |
+| A frame with Shadows and Clarity on | 1.1 s | **about 0.1 s** |
+| Room for undo on a 24 GB Mac | 256 MB, less than one such layer at 16 bits | **3 GB** |
+
+## ✅ Checked
+
+On macOS 15.6, with a Sony A7R III's 42-megapixel RAW files: all 844 unit tests pass. Not checked on macOS 26.
+
+<br>
 
 ---
+
+> [!NOTE]
+> 📜 **From here down is upstream's README, unchanged.** Where it disagrees with the part above, on the macOS version, translations, downloads and automatic updates, the part above is what holds for this fork.
+
+---
+
+# Compositor
 
 Adobe Photoshop costs too much and tools like GIMP don’t feel familiar enough for me to stay in flow. That’s why I built Compositor.
 
