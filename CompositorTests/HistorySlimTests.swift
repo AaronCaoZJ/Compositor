@@ -70,6 +70,34 @@ struct HistorySlimTests {
         #expect(history.undoCount == 4 && history.canRedo)
     }
 
+    @Test func theNearestStepsKeepTheirPixels() throws {
+        // Room for two versions of a 256-pixel layer (262 KB each), and no more.
+        let room = 600 * 1024
+        let (history, standIns) = try slimming(limit: room)
+        var document = CanvasDocument(width: 256, height: 256)
+        let first = try asset(256, "big")
+        document.layers = [ImageLayer(asset: first, origin: .zero)]
+        let id = document.layers[0].id
+        var versions = [first]
+        for _ in 1...5 {
+            history.begin("Edit", document: document, selection: id)
+            let next = try asset(256, "big")
+            document.layers[0].asset = next
+            versions.append(next)
+            history.end(document: document, selection: id)
+        }
+        #expect(history.undoCount == 5)
+        #expect(standIns().count == 3, "only the three farthest versions gave way")
+        let one = try #require(history.undo())
+        #expect(one.document?.layers[0].asset?.image === versions[4].image, "a step back is there as pixels")
+        let two = try #require(history.undo())
+        #expect(two.document?.layers[0].asset?.image === versions[3].image, "and the one before it")
+        let three = try #require(history.undo())
+        #expect(three.document?.layers[0].asset?.name == "stand-in", "past the room there is, a stand-in")
+        #expect(history.undoCount == 2 && history.canRedo)
+        #expect(history.retainedBytes(current: three.document) <= room)
+    }
+
     @Test func assetsWithNoStandInAreTrimmedAsBefore() throws {
         let (history, standIns) = try slimming(limit: 0)
         var document = CanvasDocument(width: 64, height: 64)

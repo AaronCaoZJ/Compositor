@@ -832,9 +832,9 @@ final class EditorSession {
     }
     var renamingLayerID: UUID? { didSet { resumeFileRequests() } }
     let history: DocumentHistory = {
-        let history = DocumentHistory()
-        // A RAW layer kept as a recipe is held in the history by a small stand-in, its pixels made again when a step
-        // is returned to (`rehydrateRawLayers`): such a step costs a few megabytes to keep, not hundreds.
+        let history = DocumentHistory(retainedByteLimit: DocumentLimits.historyBytes)
+        // Past that, a RAW layer kept as a recipe is held in the history by a small stand-in, its pixels made again
+        // when a step is returned to (`rehydrateRawLayers`): such a step costs a few megabytes to keep, not hundreds.
         history.slim = { RawOrigins.shared.standIn(for: $0) }
         return history
     }()

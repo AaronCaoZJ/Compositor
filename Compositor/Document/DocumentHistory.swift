@@ -165,27 +165,41 @@ final class DocumentHistory {
     }
 
     /// A small stand-in for an asset whose pixels can be made again from what it stands for (a RAW layer kept as a
-    /// recipe: `RawOrigins.standIn`), or nil for one that can't. History then holds the stand-in wherever the document
-    /// no longer shows the asset, so such a step costs a few megabytes to keep where its pixels would cost hundreds;
-    /// returning to the step, the pixels are made again and put back with `replaceAssets`.
+    /// recipe: `RawOrigins.standIn`), or nil for one that can't. Over what it may hold, history keeps the stand-in
+    /// in such an asset's place before it drops any step, so the step costs a few megabytes where its pixels would
+    /// cost hundreds; returning to it, the pixels are made again and put back with `replaceAssets`.
     @ObservationIgnored var slim: ((ImportedImage) -> ImportedImage?)?
 
-    /// Before anything is counted or dropped: every asset `current` doesn't show, and `slim` has a stand-in for, gives
-    /// way to it in every step, the one stand-in wherever the asset was, so steps still tell by their images which
-    /// layers they share.
+    /// While more is held than may be, assets `current` doesn't show give way to their stand-ins: those of the steps
+    /// farthest from where the document is first, so the nearest steps keep their pixels and are returned to at once,
+    /// as any step is. The one stand-in goes wherever the asset was, so steps still tell by their images which layers
+    /// they share.
     private func slimDown(current: CanvasDocument?) {
-        guard let slim else { return }
+        guard let slim, retainedBytes(of: past + future, current: current) > retainedByteLimit else { return }
         var shown = Set<ObjectIdentifier>()
         for layer in current?.layers ?? [] { if let image = layer.asset?.image { shown.insert(ObjectIdentifier(image)) } }
-        var standIns: [ObjectIdentifier: ImportedImage] = [:]
-        var asked = Set<ObjectIdentifier>()
-        replaceAssets { asset in
-            let image = ObjectIdentifier(asset.image)
-            if shown.contains(image) { return nil }
-            if let standIn = standIns[image] { return standIn }
-            guard asked.insert(image).inserted, let standIn = slim(asset) else { return nil }
-            standIns[image] = standIn
-            return standIn
+        // How many steps away each asset is, at its nearest: a step's `after` is one nearer than its `before` going
+        // back, and one farther going forward.
+        var nearest: [ObjectIdentifier: (steps: Int, asset: ImportedImage)] = [:]
+        func note(_ snapshot: Snapshot, _ steps: Int) {
+            for layer in snapshot.document?.layers ?? [] {
+                guard let asset = layer.asset, !shown.contains(ObjectIdentifier(asset.image)) else { continue }
+                let image = ObjectIdentifier(asset.image)
+                if steps < nearest[image]?.steps ?? .max { nearest[image] = (steps, asset) }
+            }
+        }
+        for (index, entry) in past.enumerated() {
+            note(entry.before, past.count - index)
+            note(entry.after, past.count - index - 1)
+        }
+        for (index, entry) in future.enumerated() {
+            note(entry.before, future.count - index - 1)
+            note(entry.after, future.count - index)
+        }
+        for (_, asset) in nearest.values.sorted(by: { $0.steps > $1.steps }) {
+            guard let standIn = slim(asset) else { continue }
+            replaceAssets { $0.image === asset.image ? standIn : nil }
+            if retainedBytes(of: past + future, current: current) <= retainedByteLimit { break }
         }
     }
 
