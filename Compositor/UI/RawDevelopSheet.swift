@@ -55,7 +55,8 @@ struct RawDevelopSheet: View {
                     Toggle("Highlight Recovery", isOn: $settings.highlightRecovery)
                         .disabled(!settings.supportsHighlightRecovery)
                         .help(settings.supportsHighlightRecovery ? "Brings back detail in bright areas the camera partly clipped"
-                                                                 : "Not available for this camera")
+                                                                 : RawImporter.systemHasHighlightRecovery
+                                                                     ? "Not available for this camera" : "Needs macOS 26 or later")
                 }
                 .padding(.leading, 120)
 

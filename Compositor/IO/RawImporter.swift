@@ -106,7 +106,7 @@ nonisolated enum RawImporter {
         var settings = RawDevelopSettings(temperature: filter.neutralTemperature, tint: filter.neutralTint)
         settings.noiseReduction = filter.isLuminanceNoiseReductionSupported ? filter.luminanceNoiseReductionAmount : 0
         settings.lensCorrection = filter.isLensCorrectionSupported && filter.isLensCorrectionEnabled
-        settings.highlightRecovery = filter.isHighlightRecoverySupported && filter.isHighlightRecoveryEnabled
+        settings.highlightRecovery = filter.supportsHighlightRecovery && filter.highlightRecovery
         settings.asShotTemperature = settings.temperature
         settings.asShotTint = settings.tint
         settings.asShotNoiseReduction = settings.noiseReduction
@@ -114,7 +114,7 @@ nonisolated enum RawImporter {
         settings.asShotHighlightRecovery = settings.highlightRecovery
         settings.supportsNoiseReduction = filter.isLuminanceNoiseReductionSupported
         settings.supportsLensCorrection = filter.isLensCorrectionSupported
-        settings.supportsHighlightRecovery = filter.isHighlightRecoverySupported
+        settings.supportsHighlightRecovery = filter.supportsHighlightRecovery
         return settings
     }
 
@@ -142,7 +142,7 @@ nonisolated enum RawImporter {
         filter.boostAmount = settings.boost
         if settings.supportsNoiseReduction { filter.luminanceNoiseReductionAmount = settings.noiseReduction }
         if settings.supportsLensCorrection { filter.isLensCorrectionEnabled = settings.lensCorrection }
-        if settings.supportsHighlightRecovery { filter.isHighlightRecoveryEnabled = settings.highlightRecovery }
+        if settings.supportsHighlightRecovery { filter.highlightRecovery = settings.highlightRecovery }
         guard let output = filter.outputImage else { return nil }
         if sixteenBit {
             return context.createCGImage(output, from: output.extent.integral, format: .RGBA16,
@@ -178,5 +178,30 @@ nonisolated enum RawImporter {
               let width = props[kCGImagePropertyPixelWidth] as? Int,
               let height = props[kCGImagePropertyPixelHeight] as? Int else { return nil }
         return (width, height)
+    }
+
+    /// Whether this macOS has highlight recovery at all: the engine gained it in macOS 26.
+    static var systemHasHighlightRecovery: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
+    }
+}
+
+/// Highlight recovery arrived in macOS 26. Before it the engine has no such switch, so it reads as unsupported and
+/// off, and the develop sheet greys its toggle out as it does for a camera without it.
+nonisolated private extension CIRAWFilter {
+    var supportsHighlightRecovery: Bool {
+        if #available(macOS 26.0, *) { return isHighlightRecoverySupported }
+        return false
+    }
+
+    var highlightRecovery: Bool {
+        get {
+            if #available(macOS 26.0, *) { return isHighlightRecoveryEnabled }
+            return false
+        }
+        set {
+            if #available(macOS 26.0, *) { isHighlightRecoveryEnabled = newValue }
+        }
     }
 }

@@ -166,6 +166,13 @@ struct ContentView: View {
         }
     }
 
+    /// As wide as the toolbar allows: the window less the traffic lights and New button before it and the zoom
+    /// controls after it. Bounded, so adding tabs never pushes those aside; the strip scrolls instead.
+    private func projectTabStrip(_ workspace: ProjectWorkspace) -> some View {
+        ProjectTabStrip(workspace: workspace)
+            .frame(width: max(200, windowWidth - 352), height: 34, alignment: .center)
+    }
+
     // Split again for 1.1: the chain outgrew the type checker once more.
     @ViewBuilder private var editorChrome: some View {
         editorStack
@@ -217,20 +224,24 @@ struct ContentView: View {
                     .disabled(session.isImporting || session.showsBusy || session.levels != nil)
                     .modifier(NewProjectDropTarget(workspace: applicationDelegate?.workspace))
             }
-            ToolbarSpacer(.fixed, placement: .navigation)
+            // Before macOS 26 the toolbar has no spacers or shared item backgrounds: its items sit apart on their
+            // own, and the tab strip's bounded width already keeps the zoom controls in place.
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .navigation)
+            }
             if let workspace = applicationDelegate?.workspace {
-                ToolbarItem(placement: .navigation) {
-                    ProjectTabStrip(workspace: workspace)
-                        // As wide as the toolbar allows: the window less the traffic lights and New button before it
-                        // and the zoom controls after it. Bounded, so adding tabs never pushes those aside; the
-                        // strip scrolls instead.
-                        .frame(width: max(200, windowWidth - 352), height: 34, alignment: .center)
+                if #available(macOS 26.0, *) {
+                    ToolbarItem(placement: .navigation) { projectTabStrip(workspace) }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .navigation) { projectTabStrip(workspace) }
                 }
-                .sharedBackgroundVisibility(.hidden)
             }
             // Absorb all remaining navigation-toolbar width before the zoom controls.
             // Without this spacer, the growing tab strip pushes the primary actions left.
-            ToolbarSpacer(.flexible, placement: .navigation)
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.flexible, placement: .navigation)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Fit") { session.fit() }.help("Fit canvas in window (⌘0)")
                     .accessibilityIdentifier("fitCanvas").disabled(session.document == nil)

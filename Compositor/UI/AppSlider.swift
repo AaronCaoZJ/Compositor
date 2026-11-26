@@ -97,19 +97,25 @@ struct SliderTrackView: View {
     @State private var lastKnobPress: Date?
 
     /// Solid while it rests; held, it turns to Liquid Glass and grows a little, as the system's knob does, so the
-    /// track shows through it. A soft shadow, not an outline, keeps it apart from a light track.
+    /// track shows through it. A soft shadow, not an outline, keeps it apart from a light track. Before macOS 26 there
+    /// is no Liquid Glass, and the system's knob stays solid and its size while held, so this one does too.
     private var knob: some View {
         let shape = RoundedRectangle(cornerRadius: SliderGeometry.knobSize.width / 2, style: .continuous)
         return Group {
-            if grab != nil {
+            if #available(macOS 26.0, *), grab != nil {
                 shape.fill(.clear).glassEffect(.clear, in: shape)
             } else {
                 shape.fill(Color(white: 0.92)).shadow(color: .black.opacity(0.35), radius: 1, y: 0.5)
             }
         }
         .frame(width: SliderGeometry.knobSize.width, height: SliderGeometry.knobSize.height)
-        .scaleEffect(grab != nil ? 1.25 : 1)
+        .scaleEffect(grab != nil && Self.knobGrows ? 1.25 : 1)
         .animation(.easeOut(duration: 0.15), value: grab != nil)
+    }
+
+    private static var knobGrows: Bool {
+        if #available(macOS 26.0, *) { return true }
+        return false
     }
 
     var body: some View {

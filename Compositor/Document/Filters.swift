@@ -315,6 +315,8 @@ nonisolated enum PixelFilter {
         let reach = settings.rgbSplitReach * hypot(toPixels.a, toPixels.b)
         let angle = settings.rgbSplitAngle * .pi / 180
         let sides = job.canvasSides
+        let sideMask: UInt32 = (sides.contains(.left) ? 1 : 0) | (sides.contains(.right) ? 2 : 0)
+            | (sides.contains(.top) ? 4 : 0) | (sides.contains(.bottom) ? 8 : 0)
         // Enough samples that neighbors sit a pixel or two apart, within what the GPU does at once.
         let spread = settings.rgbSplitRadial ? distance * 2 : distance, smear = settings.rgbSplitRadial ? blur * 2 : blur
         try gpu.run(context, MetalDispersion.Parameters(
@@ -322,8 +324,7 @@ nonisolated enum PixelFilter {
             // Rows run top-down here, so up on screen is a smaller row.
             direction: SIMD2(Float(cos(angle)), Float(-sin(angle))),
             distance: Float(distance), blur: Float(blur), reach: Float(reach), radial: settings.rgbSplitRadial ? 1 : 0,
-            sides: (sides.contains(.left) ? 1 : 0) | (sides.contains(.right) ? 2 : 0) | (sides.contains(.top) ? 4 : 0)
-                | (sides.contains(.bottom) ? 8 : 0),
+            sides: sideMask,
             spectral: distance > 0 ? UInt32(min(32, max(3, Int(spread)))) : 1,
             smear: blur > 0 ? UInt32(min(24, max(2, Int(smear / 2)))) : 1))
         guard let image = context.makeImage() else { throw ExportError.render }
