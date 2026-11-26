@@ -50,7 +50,7 @@ struct CameraRawDetailControls: View {
                 .scrubbable(sensitivity: 1 / step,
                             value: Binding(get: { raw.detail[keyPath: key] },
                                            set: { assignDetail(key, $0, maskingPreview: false) }), range: range)
-            CameraRawSlider(value: value, range: range, track: .plain, help: help,
+            CameraRawSlider(value: value, range: range, track: .plain, help: help, step: 1 / step,
                             onChange: { rawValue in
                                 let stepped = (rawValue * step).rounded() / step
                                 assignDetail(key, stepped, maskingPreview: maskingPreview)
@@ -149,7 +149,7 @@ struct CameraRawOpticsControls: View {
                 .scrubbable(sensitivity: 1,
                             value: Binding(get: { raw.optics[keyPath: key] },
                                            set: { newValue in update { $0.cameraRaw.optics[keyPath: key] = newValue } }), range: range)
-            CameraRawSlider(value: value, range: range, track: .plain, help: help,
+            CameraRawSlider(value: value, range: range, track: .plain, help: help, step: range.lowerBound < 0 ? nil : 1,
                             onChange: { rawValue in
                                 let stepped = range.lowerBound < 0 ? rawValue : rawValue.rounded()
                                 update { $0.cameraRaw.optics[keyPath: key] = stepped }
@@ -168,12 +168,12 @@ struct CameraRawOpticsControls: View {
             HStack(spacing: 8) {
                 Text("Low").font(.caption2).help("Start of the hue range, in degrees.")
                 CameraRawSlider(value: raw.optics[keyPath: low], range: CameraRawOpticsSettings.hueRange, track: .plain,
-                                help: "Start of the hue range, in degrees.",
+                                help: "Start of the hue range, in degrees.", step: 1,
                                 onChange: { value in update { $0.cameraRaw.optics[keyPath: low] = value.rounded() } },
                                 onReset: { update { $0.cameraRaw.optics[keyPath: low] = title.contains("Purple") ? 270 : 60 } })
                 Text("High").font(.caption2).help("End of the hue range, in degrees.")
                 CameraRawSlider(value: raw.optics[keyPath: high], range: CameraRawOpticsSettings.hueRange, track: .plain,
-                                help: "End of the hue range, in degrees.",
+                                help: "End of the hue range, in degrees.", step: 1,
                                 onChange: { value in update { $0.cameraRaw.optics[keyPath: high] = value.rounded() } },
                                 onReset: { update { $0.cameraRaw.optics[keyPath: high] = title.contains("Purple") ? 310 : 120 } })
             }

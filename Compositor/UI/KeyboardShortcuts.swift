@@ -121,7 +121,8 @@ struct ShortcutDefinition: Identifiable {
             ("Swap foreground/background", "x"), ("Reset colors", "d"), ("Cycle tool mode", "\t"),
             ("Temporary Hand tool (hold)", " "), ("Delete selection / layer / effect / lasso point", "\u{7f}"),
             ("Apply current canvas operation", "\r"), ("Cancel current canvas operation", "\u{1b}"),
-            ("Decrease brush size", "["), ("Increase brush size", "]")] {
+            ("Decrease brush size", "["), ("Increase brush size", "]"),
+            ("Before / After while a filter panel previews", "\\")] {
             result.append(entry(title, key))
         }
         result += [entry("Decrease brush hardness", "[", 8), entry("Increase brush hardness", "]", 8),

@@ -347,7 +347,7 @@ struct CameraRawControls: View {
                 .scrubbable(sensitivity: 1 / step,
                             value: Binding(get: { raw[keyPath: key] }, set: { assign(key, $0, clipping: nil) }),
                             range: range)
-            CameraRawSlider(value: raw[keyPath: key], range: range, track: track, help: help,
+            CameraRawSlider(value: raw[keyPath: key], range: range, track: track, help: help, step: 1 / step,
                             onChange: { rawValue in assign(key, (rawValue * step).rounded() / step, clipping: clipping) },
                             onReset: { reset(key, to: resetValue) })
             TextField(title, value: Binding(get: { raw[keyPath: key] }, set: { assign(key, $0, clipping: nil) }),

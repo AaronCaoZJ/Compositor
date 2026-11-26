@@ -62,6 +62,8 @@ struct CameraRawSlider: View {
     var range: ClosedRange<Double>
     var track: CameraRawSliderTrack
     var help: String
+    /// The grid `onChange` rounds the value to, which the arrow keys step in; nil when it rounds to none.
+    var step: Double? = nil
     var onChange: (Double) -> Void
     var onReset: () -> Void
 
@@ -71,7 +73,8 @@ struct CameraRawSlider: View {
                         onBegin: {},
                         onChange: { fraction in onChange(range.lowerBound + fraction * (range.upperBound - range.lowerBound)) },
                         onEnd: {},
-                        onReset: onReset)
+                        onReset: onReset,
+                        unit: step.map { $0 / (range.upperBound - range.lowerBound) })
             .help(help)
             .accessibilityLabel(help)
             .accessibilityValue(Text(String(format: "%.0f", value)))

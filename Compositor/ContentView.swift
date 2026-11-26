@@ -100,7 +100,14 @@ struct ContentView: View {
                         }
                         ZStack {
                             EditorCanvas(session: session)
+                                .background(BeforeAfterKeyListener(session: session))
                             if session.document == nil { welcome }
+                            if session.showsBefore {
+                                // At the head of the canvas: seen at once, and clear of the badges at its foot.
+                                BeforeBadge(session: session).fixedSize()
+                                    .padding(.top, 14)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                            }
                             if session.maskAloneLayer != nil || ((session.proofsColors || session.showsGamutWarning) && session.document != nil) {
                                 // At the foot of the canvas, clear of the transform box's rotation handle.
                                 VStack(spacing: 8) {
@@ -315,9 +322,11 @@ struct ContentView: View {
             if closed { filterPanel.close() }
             else {
                 filterPanel.onClose = { session.cancelFilter() }
-                let placement: FloatingPanelPlacement = session.filterEdit?.kind == .cameraRaw ? .dockedToMainWindowRight : .automatic
+                let cameraRaw = session.filterEdit?.kind == .cameraRaw
+                // Camera Raw's column of sliders opens with none of its fields being typed in; a dialog of a few
+                // amounts, as Gaussian Blur's, still opens ready for a number.
                 filterPanel.show(title: session.filterEdit?.kind.rawValue ?? "Filter", content: FilterSheet(session: session),
-                                 placement: placement)
+                                 placement: cameraRaw ? .dockedToMainWindowRight : .automatic, focusesField: !cameraRaw)
             }
         }
         .onChange(of: session.document == nil) { _, empty in

@@ -48,7 +48,9 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
         identifier = NSUserInterfaceItemIdentifier(name)
     }
 
-    func show(title: String, content: some View, placement: FloatingPanelPlacement = .automatic) {
+    /// `focusesField` false opens the panel with no field taking the keyboard: a field is typed in once it is clicked,
+    /// as in Lightroom's panels, and until then the keys go to the slider under the pointer and to Before/After.
+    func show(title: String, content: some View, placement: FloatingPanelPlacement = .automatic, focusesField: Bool = true) {
         self.placement = placement
         let panel = self.panel ?? makePanel()
         let wasVisible = panel.isVisible
@@ -88,8 +90,19 @@ final class FloatingPanelController: NSObject, NSWindowDelegate {
             }
         }
         panel.makeKeyAndOrderFront(nil)
+        if !focusesField {
+            // A window that becomes key hands the keyboard to its first field, here or as its content settles.
+            panel.makeFirstResponder(nil)
+            DispatchQueue.main.async { [weak panel] in
+                if let panel, panel.firstResponder is NSText { panel.makeFirstResponder(nil) }
+            }
+        }
         remember(panel)
     }
+
+    /// Whether `window` is one of these panels. Every field in them is a number beside its slider, so a key that
+    /// means something else there (the slider under the pointer, Before/After) need not be left to the field.
+    static func owns(_ window: NSWindow?) -> Bool { window?.delegate is FloatingPanelController }
 
     /// Hides the panel without reporting a close.
     func close() {

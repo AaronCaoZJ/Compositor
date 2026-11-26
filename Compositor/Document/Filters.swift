@@ -1204,6 +1204,29 @@ extension EditorSession {
         }
     }
 
+    /// Before/After (\): flips the open panel's Preview, so the canvas shows the layer as it was, then as the panel
+    /// leaves it, as Lightroom's key does. Not for an adjustment layer, whose eye in the Layers panel shows the picture
+    /// without it. False when no panel with a preview is open.
+    @discardableResult func toggleBeforeAfter() -> Bool {
+        guard adjustmentOriginal == nil else { return false }
+        if let edit = filterEdit {
+            guard !edit.committing, !edit.repeating else { return false }
+            updateFilter(edit.settings, preview: !edit.preview)
+        } else if let edit = levels {
+            updateLevels(edit.settings, preview: !edit.preview)
+        } else if let edit = hueSaturation {
+            updateHueSaturation(edit.settings, preview: !edit.preview)
+        } else { return false }
+        return true
+    }
+
+    /// The canvas shows the layer as it was, an open panel's Preview being off.
+    var showsBefore: Bool {
+        guard adjustmentOriginal == nil else { return false }
+        if let edit = filterEdit { return !edit.preview && !edit.repeating }
+        return levels?.preview == false || hueSaturation?.preview == false
+    }
+
     func cancelFilter() {
         // A filter color still being picked goes with the panel.
         if case .gradientMap = colorPicker?.target { closeColorPicker(commit: false) }
