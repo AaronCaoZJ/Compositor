@@ -22203,6 +22203,23 @@
         }
       }
     },
+    "Spot Healing Type": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Type"
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "类型"
+          }
+        }
+      }
+    },
     "Spread": {
       "extractionState": "manual",
       "localizations": {
