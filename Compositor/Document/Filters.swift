@@ -723,6 +723,9 @@ final class FilterEdit {
     /// layer's place as what the rest of the panel works on (`EditorSession.updateCameraRawDevelop`): exposure and
     /// white balance set where the file's latitude still is, not on pixels that have lost it. Nil for any other layer.
     var rawSettings: RawDevelopSettings?
+    /// The layer came from a project that kept its RAW recipe, and the file can't be found: the panel says so where
+    /// its RAW section would be, and adjusts the layer's pixels.
+    var rawFileAway = false
     @ObservationIgnored private(set) var rawOrigin: RawOrigin?
     @ObservationIgnored private(set) var rawDeveloper: RawDeveloper?
     /// What `previewSource`, and the draft, were last developed with.
@@ -1034,9 +1037,10 @@ extension EditorSession {
             edit.repeating = repeating
             // A layer still as a RAW file developed it gets the panel's RAW section. Not with a selection, which
             // keeps the rest of the layer as it is, where a new develop changes all of it.
-            if kind == .cameraRaw, !repeating, adjustmentOriginal == nil, edit.selection == nil,
-               let origin = RawOrigins.shared.origin(of: layer.asset) {
-                edit.developsRaw(from: origin)
+            if kind == .cameraRaw, !repeating, adjustmentOriginal == nil, edit.selection == nil {
+                // A file that was away when the project opened is looked for again here.
+                if let origin = RawOrigins.shared.reconnected(layer.asset) { edit.developsRaw(from: origin) }
+                else { edit.rawFileAway = RawOrigins.shared.isAway(layer.asset) }
             }
             filterEdit = edit
             // Volumetric Light's depth model, downloaded the first time: the first preview waits for it, so the fog

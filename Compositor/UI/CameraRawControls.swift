@@ -18,6 +18,12 @@ struct CameraRawControls: View {
                 VStack(alignment: .leading, spacing: 12) {
                     // A layer still as its RAW file developed it: the develop's own controls come first.
                     if session.filterEdit?.rawSettings != nil { CameraRawDevelopControls(session: session) }
+                    else if session.filterEdit?.rawFileAway == true {
+                        Text("This layer’s RAW file can’t be found, so these adjust its pixels. With the file back where it was, open Camera Raw again to develop from it.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                     ForEach(Section.allCases) { section in
                         disclosure(section)
                     }

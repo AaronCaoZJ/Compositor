@@ -21,8 +21,11 @@ extension EditorSession {
                     }, deletedFrameIndices: animation.deletedFrameIndices.sorted(), frameOrder: animation.frameOrder,
                     timing: animation.timing == GIFFrameTiming() ? nil : ProjectGIFTimingRecord(animation.timing))
             }
-            return ProjectLayerRecord(id: layer.id, name: layer.name, isVisible: layer.isVisible,
+            var record = ProjectLayerRecord(id: layer.id, name: layer.name, isVisible: layer.isVisible,
                 transform: layer.transform, imageFile: asset?.file(for: layer.id), parentID: layer.parentID, isGroup: layer.isGroup, opacity: layer.opacity, blendMode: layer.blendMode, maskFile: layer.mask == nil ? nil : "\(layer.id.uuidString).mask.png", maskEnabled: layer.mask?.isEnabled, maskSourceID: layer.maskSourceID, adjustment: layer.adjustment, maskPlacement: layer.mask?.placement, maskLinked: layer.mask?.isLinked, shape: layer.liveShape?.style, effects: layer.effects, text: layer.liveText?.style, gif: gif, movie: layer.movie)
+            // A RAW layer's recipe, for as long as its pixels are the ones the recipe made.
+            if gif == nil { record.raw = RawOrigins.shared.record(for: layer.asset) }
+            return record
         }
         return ProjectSnapshot(manifest: ProjectManifest(resolution: document.resolution, documentID: document.id, width: document.width,
             height: document.height, activeLayerID: activeLayerID, layers: layers,
@@ -41,6 +44,13 @@ extension EditorSession {
         transformEdit = nil
         document = CanvasDocument(id: manifest.documentID, width: manifest.width, height: manifest.height,
             layers: snapshot.documentLayers, resolution: manifest.resolution ?? 72, guides: manifest.guides ?? [])
+        // A RAW layer is its recipe again where its file was found, to open in Camera Raw as it was left. Where it
+        // wasn't, what the project held is kept with the layer, to be saved again and looked for again.
+        for record in manifest.layers {
+            guard let saved = record.raw, let asset = snapshot.images[record.id] else { continue }
+            if let origin = snapshot.raws[record.id] { RawOrigins.shared.register(asset, from: origin) }
+            else { RawOrigins.shared.keep(saved, for: asset) }
+        }
         activeLayerID = manifest.activeLayerID
         projectURL = url
         sourceImageURL = nil

@@ -2,7 +2,7 @@
 
 ## About this fork
 
-This is the `macos15` branch of a fork of [robbietilton/Compositor](https://github.com/robbietilton/Compositor), kept on top of its 1.7.2. It runs on macOS 15, speaks Simplified Chinese, and gives Camera Raw the RAW file to work from. It isn't the official app: there is no download and no automatic update, and its problems aren't upstream's to answer for. Below this section the README is upstream's, unchanged. Where the two disagree, on the macOS version and on translations, this section is what holds for the fork.
+This is a fork of [robbietilton/Compositor](https://github.com/robbietilton/Compositor), kept on top of its 1.7.2; the work is done on the `macos15` branch. It runs on macOS 15, speaks Simplified Chinese, and gives Camera Raw the RAW file to work from. It isn't the official app: there is no download and no automatic update, and its problems aren't upstream's to answer for. Below this section the README is upstream's, unchanged. Where the two disagree, on the macOS version and on translations, this section is what holds for the fork.
 
 To build it, run `scripts/build-macos15.sh` and open `build/macos15/release/Compositor.app`. The Command Line Tools are enough; Xcode isn't needed. The app is signed ad hoc, for the Mac that built it.
 
@@ -10,7 +10,7 @@ To build it, run `scripts/build-macos15.sh` and open `build/macos15/release/Comp
 - **Runs on macOS 15.4 and later**, where upstream needs macOS 26. Controls that only macOS 26 draws, Liquid Glass among them, take macOS 15's own look. RAW Highlight Recovery is the one feature left out: the system's decoder has it from macOS 26.
 - **Simplified Chinese interface**, following the language macOS is set to for the app, with Adobe's own Chinese terms for what Photoshop, Camera Raw and Lightroom have too. It starts from the translation in [emptykid/Compositor](https://github.com/emptykid/Compositor); [docs/localization.md](docs/localization.md) says how to add to it.
 - **A RAW section in Camera Raw.** On a layer that is still what its RAW file developed to, Exposure, Temperature, Tint, Boost, Noise Reduction and Lens Correction develop the file again, so a blown highlight comes back from the sensor's data rather than from pixels already clipped.
-- **RAW layers stay recipes.** OK keeps the file and the settings with the layer: open Camera Raw on it again and every slider is where it was left, to carry on from. This lasts for the session; it isn't saved in the project yet.
+- **RAW layers stay recipes.** OK keeps the file and the settings with the layer: open Camera Raw on it again and every slider is where it was left, to carry on from. A saved project keeps the recipe too, with a read-only reference to the RAW file rather than a copy of it: the file is never written, and with it moved away the project still opens, with the layer's pixels.
 - **Lightroom's keys.** ← and → move the slider under the pointer, by a larger step with Shift and the smallest with Option. `\` switches between before and after while a filter's panel is previewing.
 
 ### Fixes
@@ -24,7 +24,7 @@ To build it, run `scripts/build-macos15.sh` and open `build/macos15/release/Comp
 - **Undo is sized to the Mac**: an eighth of its memory, where it was a fixed 256 MB that one 42-megapixel 16-bit layer overflowed, leaving nothing to undo. Over that, a RAW layer's older steps are kept as small stand-ins and developed again when returned to, the farthest first, so the nearest steps come back at once.
 - **Before and after are both kept**, so `\` switches between them without rendering again.
 
-Checked on macOS 15.6 with a Sony A7R III's 42-megapixel RAW files: all 838 unit tests pass.
+Checked on macOS 15.6 with a Sony A7R III's 42-megapixel RAW files: all the unit tests pass.
 
 ---
 

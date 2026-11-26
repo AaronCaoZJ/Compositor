@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 /// photosite at 12–14 bits; every choice a JPEG has already baked in — exposure, white balance,
 /// contrast — is still open. Compositor's layers are 8-bit, so that latitude has to be spent at
 /// import: these are the controls for spending it deliberately rather than accepting a default.
-nonisolated struct RawDevelopSettings: Equatable, Sendable {
+nonisolated struct RawDevelopSettings: Equatable, Sendable, Codable {
     /// Stops of exposure, either side of what the camera recorded.
     var exposure: Float = 0
     /// White balance in Kelvin, starting from the camera's own reading.
@@ -32,6 +32,11 @@ nonisolated struct RawDevelopSettings: Equatable, Sendable {
     var supportsNoiseReduction = false
     var supportsLensCorrection = false
     var supportsHighlightRecovery = false
+
+    /// False for settings a hand-written project could hold and the engine couldn't take.
+    var isFinite: Bool {
+        [exposure, temperature, tint, boost, noiseReduction, asShotTemperature, asShotTint, asShotNoiseReduction].allSatisfy(\.isFinite)
+    }
 
     var isAsShot: Bool {
         exposure == 0 && boost == 1 && temperature == asShotTemperature && tint == asShotTint
@@ -202,23 +207,32 @@ nonisolated final class RawOrigin: @unchecked Sendable {
     let recipe: CameraRawSettings?
     /// What the sliders' grain was drawn with, so that made again it falls where it did.
     let seed: UInt32
+    /// A read-only bookmark of the file, by which a saved project finds it again (`RawLink`). Nil when none could be
+    /// made, and a project then keeps the layer's pixels alone.
+    let bookmark: Data?
+    /// `digest(of:)` the file's bytes: with their count, how a project knows the file again.
+    let digest: String
 
-    init(data: Data, type: String?, settings: RawDevelopSettings, recipe: CameraRawSettings? = nil, seed: UInt32 = 0) {
+    init(data: Data, type: String?, settings: RawDevelopSettings, recipe: CameraRawSettings? = nil, seed: UInt32 = 0,
+         bookmark: Data? = nil, digest: String? = nil) {
         self.data = data
         self.type = type
         self.settings = settings
         self.recipe = recipe
         self.seed = seed
+        self.bookmark = bookmark
+        self.digest = digest ?? Self.digest(of: data)
     }
 
     /// The file mapped rather than read, where that is safe, so a 90 MB file costs no memory until it is developed.
     convenience init?(url: URL, settings: RawDevelopSettings) {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
-        self.init(data: data, type: UTType(filenameExtension: url.pathExtension)?.identifier, settings: settings)
+        self.init(data: data, type: UTType(filenameExtension: url.pathExtension)?.identifier, settings: settings,
+                  bookmark: Self.bookmark(of: url))
     }
 
     func developed(with settings: RawDevelopSettings, recipe: CameraRawSettings? = nil, seed: UInt32 = 0) -> RawOrigin {
-        RawOrigin(data: data, type: type, settings: settings, recipe: recipe, seed: seed)
+        RawOrigin(data: data, type: type, settings: settings, recipe: recipe, seed: seed, bookmark: bookmark, digest: digest)
     }
 
     /// The layer these make: the file developed whole at 16 bits by a decoder of its own, and the recipe's sliders
@@ -246,7 +260,8 @@ nonisolated final class RawOrigin: @unchecked Sendable {
 
 /// Which pixels were made from which RAW file, and how. Told by the images themselves rather than kept on the layer:
 /// once anything but Camera Raw is done to a layer its images are new ones, which aren't found here, and undone they
-/// are the old ones again. Nothing is held: an entry goes when its images do. Not saved with a project.
+/// are the old ones again. Nothing is held: an entry goes when its images do. A project saves each layer's as a
+/// `RawLink` and puts it back here on opening.
 final class RawOrigins {
     static let shared = RawOrigins()
     private struct Entry {
@@ -267,6 +282,48 @@ final class RawOrigins {
     func origin(of asset: ImportedImage?) -> RawOrigin? {
         guard let asset, asset.raster == nil, let deep = asset.deep else { return nil }
         return entries.first { $0.image === asset.image && $0.deep === deep }?.origin
+    }
+
+    private struct Away {
+        weak var image: CGImage?
+        weak var deep: CGImage?
+        let record: RawLinkRecord
+    }
+    private var away: [Away] = []
+
+    /// A layer opened from a project whose RAW file wasn't found, or whose recipe this build can't read: `record`
+    /// is what the project held for it. Kept while the layer's pixels are those the project had, to be saved again
+    /// as it was and tried again when Camera Raw next opens on the layer (`reconnected`).
+    func keep(_ record: RawLinkRecord, for asset: ImportedImage) {
+        away.removeAll { $0.image == nil || $0.deep == nil }
+        guard let deep = asset.deep else { return }
+        away.append(Away(image: asset.image, deep: deep, record: record))
+    }
+
+    /// Whether the layer's RAW file is one that couldn't be found.
+    func isAway(_ asset: ImportedImage?) -> Bool {
+        guard let asset, asset.raster == nil, let deep = asset.deep else { return false }
+        return away.contains { $0.image === asset.image && $0.deep === deep }
+    }
+
+    /// `origin(of:)`, looking again for a file that was away: a drive plugged back in since the project opened.
+    func reconnected(_ asset: ImportedImage?) -> RawOrigin? {
+        if let origin = origin(of: asset) { return origin }
+        guard let asset, asset.raster == nil, let deep = asset.deep,
+              let index = away.firstIndex(where: { $0.image === asset.image && $0.deep === deep }),
+              let origin = away[index].record.link?.origin() else { return nil }
+        away.remove(at: index)
+        register(asset, from: origin)
+        return origin
+    }
+
+    /// What a project saves for the layer: its recipe, or what the project it came from held while its file is away.
+    func record(for asset: ImportedImage?) -> RawLinkRecord? {
+        guard let asset, asset.raster == nil, let deep = asset.deep else { return nil }
+        if let origin = origin(of: asset) {
+            return RawLink(origin, width: deep.width, height: deep.height).flatMap(RawLinkRecord.init)
+        }
+        return away.first { $0.image === asset.image && $0.deep === deep }?.record
     }
 
     private struct StandIn {

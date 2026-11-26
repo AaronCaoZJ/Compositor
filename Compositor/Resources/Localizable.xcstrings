@@ -23750,6 +23750,23 @@
         }
       }
     },
+    "This layer’s RAW file can’t be found, so these adjust its pixels. With the file back where it was, open Camera Raw again to develop from it.": {
+      "extractionState": "manual",
+      "localizations": {
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "This layer’s RAW file can’t be found, so these adjust its pixels. With the file back where it was, open Camera Raw again to develop from it."
+          }
+        },
+        "zh-Hans": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "找不到此图层的 RAW 文件，以下调整作用于其像素。文件回到原位后，重新打开 Camera Raw 即可从文件重新解码。"
+          }
+        }
+      }
+    },
     "This project exceeds the supported canvas, layer, file-size, or %lld-megapixel document limit.": {
       "extractionState": "manual",
       "localizations": {
