@@ -22,7 +22,7 @@ struct ShapeControls: View {
                 session.cancelShape()
                 session.shapeKind = kind
             })) {
-                ForEach(ShapeKind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(ShapeKind.allCases, id: \.self) { Text(L10n.string($0.rawValue)).tag($0) }
             }
             .pickerStyle(.segmented).labelsHidden().fixedSize()
             .help("Shift-U (or Tab) steps through Rectangle, Ellipse and Line")
@@ -79,7 +79,7 @@ struct ShapeControls: View {
                     Picker("Style", selection: Binding(get: { session.displayedLineStyle },
                                                       set: { session.setDisplayedLineStyle($0) })) {
                         ForEach(ShapeLineStyle.allCases, id: \.self) { style in
-                            Image(nsImage: LineSample.style(style)).accessibilityLabel(style.rawValue).tag(style)
+                            Image(nsImage: LineSample.style(style)).accessibilityLabel(L10n.string(style.rawValue)).tag(style)
                         }
                     }
                     .pickerStyle(.menu).labelsHidden().fixedSize()
@@ -91,7 +91,7 @@ struct ShapeControls: View {
                     Picker("Cap", selection: Binding(get: { session.displayedLineCap },
                                                     set: { session.setDisplayedLineCap($0) })) {
                         ForEach(ShapeLineCap.allCases, id: \.self) { cap in
-                            Label { Text(cap.rawValue) } icon: { Image(nsImage: LineSample.cap(cap)) }.tag(cap)
+                            Label { Text(L10n.string(cap.rawValue)) } icon: { Image(nsImage: LineSample.cap(cap)) }.tag(cap)
                         }
                     }
                     .pickerStyle(.menu).labelsHidden().fixedSize()

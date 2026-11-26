@@ -144,7 +144,7 @@ struct ExportAsSheet: View {
                     // which takes the chosen one's name.
                     HStack(spacing: 12) {
                         Picker("Format", selection: $format) {
-                            ForEach([ExportFormat.jpeg, .png], id: \.self) { Text($0.rawValue).tag($0) }
+                            ForEach([ExportFormat.jpeg, .png], id: \.self) { Text(L10n.string($0.rawValue)).tag($0) }
                         }
                         .pickerStyle(.segmented).labelsHidden().fixedSize()
                         moreFormats
@@ -208,7 +208,7 @@ struct ExportAsSheet: View {
                 if format == .channelPack {
                     ForEach(Array(ChannelPack.Channel.allCases.enumerated()), id: \.offset) { index, channel in
                         GridRow {
-                            Text(channel.rawValue)
+                            Text(L10n.string(channel.rawValue))
                             channelPicker(index, channel: channel)
                         }
                     }
@@ -405,7 +405,7 @@ struct ExportAsSheet: View {
     private func loadProfile() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [UTType(filenameExtension: "icc") ?? .data, UTType(filenameExtension: "icm") ?? .data]
-        panel.message = "Choose a CMYK ICC profile, such as the one your printer gave you"
+        panel.message = String(localized: "Choose a CMYK ICC profile, such as the one your printer gave you")
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do { session.proofProfile = try CMYK.load(url) }
         catch { self.error = error.localizedDescription }
@@ -416,21 +416,21 @@ struct ExportAsSheet: View {
     @ViewBuilder private var moreFormats: some View {
         let others = formats.filter { $0 != .png && $0 != .jpeg }
         let chosen = others.contains(format)
-        let menu = Menu(chosen ? format.rawValue : "More") {
+        let menu = Menu(L10n.string(chosen ? format.rawValue : "More")) {
             Picker("More formats", selection: $format) {
-                ForEach(others, id: \.self) { Text($0.rawValue).tag($0) }
+                ForEach(others, id: \.self) { Text(L10n.string($0.rawValue)).tag($0) }
             }
             .pickerStyle(.inline).labelsHidden()
         }
         .menuStyle(.button).fixedSize()
-        .help("Other formats: TIFF, PDF and GIF\(others.contains(.exr) ? ", EXR to keep light brighter than white" : ""), Channel Pack for game textures, and PSD to keep the layers for Photoshop")
+        .help("Other formats: TIFF, PDF and GIF\(others.contains(.exr) ? String(localized: ", EXR to keep light brighter than white") : ""), Channel Pack for game textures, and PSD to keep the layers for Photoshop")
         if chosen { menu.buttonStyle(.borderedProminent) } else { menu.buttonStyle(.bordered) }
     }
 
     /// A channel's source: one of the document's layers or groups, top first, or solid black or white.
     private func channelPicker(_ index: Int, channel: ChannelPack.Channel) -> some View {
         let layers = snapshot?.manifest.layers ?? []
-        return Picker(channel.rawValue, selection: $channels[index]) {
+        return Picker(L10n.string(channel.rawValue), selection: $channels[index]) {
             Text("Black").tag(ChannelPack.Source.black)
             Text("White").tag(ChannelPack.Source.white)
             Divider()
@@ -439,7 +439,7 @@ struct ExportAsSheet: View {
             }
         }
         .labelsHidden().frame(width: 260)
-        .help("What fills the \(channel.rawValue.lowercased()) channel: a layer or group read as grayscale, or solid black or white")
+        .help("What fills the \(L10n.string(channel.rawValue).lowercased()) channel: a layer or group read as grayscale, or solid black or white")
     }
 
     private func sizeField(_ value: Int, set: @escaping (Int) -> Void) -> some View {

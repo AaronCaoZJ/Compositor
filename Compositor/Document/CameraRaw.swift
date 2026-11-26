@@ -2,13 +2,13 @@ import AppKit
 
 /// White balance on an already-rendered layer. Raw lighting presets are absent: temperature and tint
 /// are relative offsets, not kelvin.
-nonisolated enum CameraRawWhiteBalance: String, CaseIterable, Sendable {
+nonisolated enum CameraRawWhiteBalance: String, CaseIterable, Sendable, Codable {
     case custom = "Custom"
     case auto = "Auto"
 }
 
 /// Glow's three looks. Warmth tints Diffusion and Bloom from cool to warm; Halation's fringe stays red.
-nonisolated enum CameraRawGlowStyle: String, CaseIterable, Sendable {
+nonisolated enum CameraRawGlowStyle: String, CaseIterable, Sendable, Codable {
     case diffusion = "Diffusion"
     case bloom = "Bloom"
     case halation = "Halation"
@@ -22,7 +22,7 @@ nonisolated enum CameraRawGlowStyle: String, CaseIterable, Sendable {
 }
 
 /// Post-crop vignette. Highlight Priority is the style whose Highlights slider protects bright pixels.
-nonisolated enum CameraRawVignetteStyle: String, CaseIterable, Sendable {
+nonisolated enum CameraRawVignetteStyle: String, CaseIterable, Sendable, Codable {
     case highlightPriority = "Highlight Priority"
     case colorPriority = "Color Priority"
     case paintOverlay = "Paint Overlay"
@@ -44,7 +44,7 @@ nonisolated enum CameraRawClipping: Int32, Sendable {
 }
 
 /// Camera Raw Filter settings. Defaults leave the image unchanged.
-nonisolated struct CameraRawSettings: Equatable, Sendable {
+nonisolated struct CameraRawSettings: Equatable, Sendable, Codable {
     static let exposureRange: ClosedRange<Double> = -5...5
     static let toneRange: ClosedRange<Double> = -100...100
     static let unitRange: ClosedRange<Double> = 0...100
@@ -402,8 +402,8 @@ extension EditorSession {
               let document, CGRect(origin: .zero, size: document.size).contains(point) else { return }
         let pixel = point.applying(edit.mapping.inverted())
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
-        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.original.image.width),
-              pixel.y < CGFloat(edit.original.image.height), let sample = edit.original.image.cropping(to: rect) else { return }
+        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.previewSource.width),
+              pixel.y < CGFloat(edit.previewSource.height), let sample = edit.previewSource.cropping(to: rect) else { return }
         do {
             let context = try BrushRaster.context(width: 1, height: 1, mask: false)
             BrushRaster.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1), mask: false, context: context)
@@ -427,7 +427,7 @@ extension EditorSession {
         var settings = edit.settings
         settings.cameraRaw.whiteBalance = .auto
         updateFilter(settings, preview: edit.preview)
-        let image = edit.original.image
+        let image = edit.previewSource
         let solved = await Task.detached(priority: .userInitiated) {
             CameraRawSettings.autoBalance(of: image)
         }.value
@@ -444,8 +444,8 @@ extension EditorSession {
               let document, CGRect(origin: .zero, size: document.size).contains(point) else { return }
         let pixel = point.applying(edit.mapping.inverted())
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
-        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.original.image.width),
-              pixel.y < CGFloat(edit.original.image.height), let sample = edit.original.image.cropping(to: rect) else { return }
+        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.previewSource.width),
+              pixel.y < CGFloat(edit.previewSource.height), let sample = edit.previewSource.cropping(to: rect) else { return }
         do {
             let context = try BrushRaster.context(width: 1, height: 1, mask: false)
             BrushRaster.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1), mask: false, context: context)
@@ -490,7 +490,7 @@ extension EditorSession {
     func updateCameraRawReadout(at point: CGPoint) {
         guard let edit = filterEdit, edit.kind == .cameraRaw else { return }
         let image = edit.preparedPreview ?? edit.previewSource
-        let pixel = point.applying(edit.previewMapping.inverted())
+        let pixel = edit.previewPixel(at: point, in: image)
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
         guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(image.width), pixel.y < CGFloat(image.height),
               let sample = image.cropping(to: rect) else {
@@ -589,7 +589,7 @@ extension EditorSession {
     private func cameraRawSample(at point: CGPoint) -> (tone: Double, hue: Double, saturation: Double, luminance: Double)? {
         guard let edit = filterEdit else { return nil }
         let image = edit.preparedPreview ?? edit.previewSource
-        let pixel = point.applying(edit.previewMapping.inverted())
+        let pixel = edit.previewPixel(at: point, in: image)
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
         guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(image.width), pixel.y < CGFloat(image.height),
               let sample = image.cropping(to: rect),

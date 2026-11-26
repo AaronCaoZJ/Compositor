@@ -62,6 +62,9 @@ nonisolated struct ProjectLayerRecord: Codable, Sendable {
     /// The embedded animation and masks scoped to individual frames. Missing before version 27.
     var gif: ProjectGIFRecord? = nil
     var movie: MovieLink? = nil
+    /// A RAW layer's recipe: where its file is and what it is developed with (`RawLink`). Not gated on the version:
+    /// a reader that doesn't know it keeps the layer's pixels, which are saved as any layer's.
+    var raw: RawLinkRecord? = nil
 }
 
 nonisolated struct ProjectGIFRecord: Codable, Sendable {
@@ -139,17 +142,19 @@ nonisolated struct ProjectSnapshot: @unchecked Sendable {
     let images: [UUID: ImportedImage]
     var masks: [UUID: ImportedImage] = [:]
     var animations: [UUID: GIFAnimation] = [:]
+    /// The RAW files found again for the layers that record one (`ProjectLayerRecord.raw`), on loading.
+    var raws: [UUID: RawOrigin] = [:]
 }
 
 nonisolated enum ProjectError: LocalizedError {
     case invalid, version(Int), missingImage, tooLarge, encode
     var errorDescription: String? {
         switch self {
-        case .invalid: "This is not a valid Compositor project, or its metadata is damaged."
-        case .version(let version): "This project uses format version \(version). This app supports versions 1–\(ProjectManifest.current) and 27."
-        case .missingImage: "An image inside the project is missing or damaged. The current document has not been replaced."
-        case .tooLarge: "This project exceeds the supported canvas, layer, file-size, or \(DocumentLimits.documentBudgetMegapixels)-megapixel document limit."
-        case .encode: "An image could not be saved. The previous project has not been replaced."
+        case .invalid: String(localized: "This is not a valid Compositor project, or its metadata is damaged.")
+        case .version(let version): String(localized: "This project uses format version \(version). This app supports versions 1–\(ProjectManifest.current) and 27.")
+        case .missingImage: String(localized: "An image inside the project is missing or damaged. The current document has not been replaced.")
+        case .tooLarge: String(localized: "This project exceeds the supported canvas, layer, file-size, or \(DocumentLimits.documentBudgetMegapixels)-megapixel document limit.")
+        case .encode: String(localized: "An image could not be saved. The previous project has not been replaced.")
         }
     }
 }
@@ -329,7 +334,15 @@ actor ProjectStore {
             try checkGIFBudget(source, bytes: &gifBytes, thumbnails: &thumbnailPixels)
             animations[layer.id] = animation
         }
-        return ProjectSnapshot(manifest: manifest, images: images, masks: masks, animations: animations)
+        // A RAW layer's file, found again by its bookmark and known by its length and digest. One that isn't found
+        // leaves the layer its pixels, as does a layer whose pixels aren't the size the recipe made.
+        var raws: [UUID: RawOrigin] = [:]
+        for layer in manifest.layers {
+            guard let link = layer.raw?.link, let deep = images[layer.id]?.deep, deep.width == link.width,
+                  deep.height == link.height, let origin = link.origin() else { continue }
+            raws[layer.id] = origin
+        }
+        return ProjectSnapshot(manifest: manifest, images: images, masks: masks, animations: animations, raws: raws)
     }
 
     private func validate(_ manifest: ProjectManifest) throws {

@@ -28,7 +28,7 @@ nonisolated enum PSDText {
 
     static func missingFontNote(_ name: String) -> String? {
         guard NSFont(name: name, size: 12) == nil else { return nil }
-        return "The font “\(name)” isn’t installed, so the text was drawn with the system font."
+        return String(localized: "The font “\(name)” isn’t installed, so the text was drawn with the system font.")
     }
 
     /// An artboard folder's rectangle on the canvas, in pixels (its `artb` descriptor, or the older `artd`/`abdd`);

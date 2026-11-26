@@ -33,8 +33,8 @@ final class DocumentHistory {
 
     var canUndo: Bool { depth == 0 && !past.isEmpty }
     var canRedo: Bool { depth == 0 && !future.isEmpty }
-    var undoName: String { past.last?.name ?? "" }
-    var redoName: String { future.last?.name ?? "" }
+    var undoName: String { past.last.map { L10n.string($0.name) } ?? "" }
+    var redoName: String { future.last.map { L10n.string($0.name) } ?? "" }
     var isModified: Bool { revision != savedRevision }
     var undoCount: Int { past.count }
     func markSaved() { savedRevision = revision }
@@ -109,7 +109,9 @@ final class DocumentHistory {
     }
 
     /// Bytes retained only by history, excluding images in the live document.
-    func retainedBytes(current: CanvasDocument?) -> Int {
+    func retainedBytes(current: CanvasDocument?) -> Int { retainedBytes(of: past + future, current: current) }
+
+    private func retainedBytes(of entries: [Entry], current: CanvasDocument?) -> Int {
         var seen = Set<ObjectIdentifier>()
         var seenSources = Set<ObjectIdentifier>()
         for layer in current?.layers ?? [] {
@@ -122,7 +124,7 @@ final class DocumentHistory {
             }
         }
         var bytes = 0
-        for entry in past + future {
+        for entry in entries {
             for snapshot in [entry.before, entry.after] {
                 for layer in snapshot.document?.layers ?? [] {
                     for asset in Self.assets(of: layer) {
@@ -143,10 +145,86 @@ final class DocumentHistory {
     }
 
     private func trim(current: CanvasDocument?) {
-        while past.count + future.count > entryLimit || retainedBytes(current: current) > retainedByteLimit {
-            if !past.isEmpty { past.removeFirst() }
+        slimDown(current: current)
+        while past.count + future.count > entryLimit {
+            if !past.isEmpty { past.removeFirst() } else { future.removeFirst() }
+        }
+        // Over the pixels it may hold, a step goes from one end: the oldest undo, unless the farthest redo gives
+        // back more. An undone filter's result is hundreds of megabytes where the oldest steps may each be a RAW
+        // layer's stand-in, and dropping those first would empty the history without making the room.
+        while true {
+            let held = retainedBytes(of: past + future, current: current)
+            guard held > retainedByteLimit else { break }
+            let withoutOldest = past.isEmpty ? held : retainedBytes(of: Array(past.dropFirst()) + future, current: current)
+            let withoutFarthest = future.isEmpty ? held : retainedBytes(of: past + Array(future.dropFirst()), current: current)
+            if !future.isEmpty, withoutFarthest < withoutOldest { future.removeFirst() }
+            else if !past.isEmpty { past.removeFirst() }
             else if !future.isEmpty { future.removeFirst() }
             else { break }
         }
+    }
+
+    /// A small stand-in for an asset whose pixels can be made again from what it stands for (a RAW layer kept as a
+    /// recipe: `RawOrigins.standIn`), or nil for one that can't. Over what it may hold, history keeps the stand-in
+    /// in such an asset's place before it drops any step, so the step costs a few megabytes where its pixels would
+    /// cost hundreds; returning to it, the pixels are made again and put back with `replaceAssets`.
+    @ObservationIgnored var slim: ((ImportedImage) -> ImportedImage?)?
+
+    /// While more is held than may be, assets `current` doesn't show give way to their stand-ins: those of the steps
+    /// farthest from where the document is first, so the nearest steps keep their pixels and are returned to at once,
+    /// as any step is. The one stand-in goes wherever the asset was, so steps still tell by their images which layers
+    /// they share.
+    private func slimDown(current: CanvasDocument?) {
+        guard let slim, retainedBytes(of: past + future, current: current) > retainedByteLimit else { return }
+        var shown = Set<ObjectIdentifier>()
+        for layer in current?.layers ?? [] { if let image = layer.asset?.image { shown.insert(ObjectIdentifier(image)) } }
+        // How many steps away each asset is, at its nearest: a step's `after` is one nearer than its `before` going
+        // back, and one farther going forward.
+        var nearest: [ObjectIdentifier: (steps: Int, asset: ImportedImage)] = [:]
+        func note(_ snapshot: Snapshot, _ steps: Int) {
+            for layer in snapshot.document?.layers ?? [] {
+                guard let asset = layer.asset, !shown.contains(ObjectIdentifier(asset.image)) else { continue }
+                let image = ObjectIdentifier(asset.image)
+                if steps < nearest[image]?.steps ?? .max { nearest[image] = (steps, asset) }
+            }
+        }
+        for (index, entry) in past.enumerated() {
+            note(entry.before, past.count - index)
+            note(entry.after, past.count - index - 1)
+        }
+        for (index, entry) in future.enumerated() {
+            note(entry.before, future.count - index - 1)
+            note(entry.after, future.count - index)
+        }
+        for (_, asset) in nearest.values.sorted(by: { $0.steps > $1.steps }) {
+            guard let standIn = slim(asset) else { continue }
+            replaceAssets { $0.image === asset.image ? standIn : nil }
+            if retainedBytes(of: past + future, current: current) <= retainedByteLimit { break }
+        }
+    }
+
+    /// Puts another asset in a layer's place in every step, as `replacement` says; nil leaves one as it is.
+    func replaceAssets(_ replacement: (ImportedImage) -> ImportedImage?) {
+        var any = false
+        func replaced(_ snapshot: Snapshot) -> Snapshot {
+            guard var document = snapshot.document else { return snapshot }
+            var changed = false
+            for index in document.layers.indices {
+                guard let asset = document.layers[index].asset, let other = replacement(asset) else { continue }
+                document.layers[index].asset = other
+                changed = true
+            }
+            guard changed else { return snapshot }
+            any = true
+            return Snapshot(document: document, activeLayerID: snapshot.activeLayerID, revision: snapshot.revision)
+        }
+        let earlier = past.map { Entry(name: $0.name, before: replaced($0.before), after: replaced($0.after)) }
+        let later = future.map { Entry(name: $0.name, before: replaced($0.before), after: replaced($0.after)) }
+        let open = pending.map(replaced)
+        // Left alone when nothing changed, which is nearly every time: these are watched.
+        guard any else { return }
+        past = earlier
+        future = later
+        pending = open
     }
 }

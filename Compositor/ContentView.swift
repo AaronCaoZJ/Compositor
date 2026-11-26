@@ -100,7 +100,14 @@ struct ContentView: View {
                         }
                         ZStack {
                             EditorCanvas(session: session)
+                                .background(BeforeAfterKeyListener(session: session))
                             if session.document == nil { welcome }
+                            if session.showsBefore {
+                                // At the head of the canvas: seen at once, and clear of the badges at its foot.
+                                BeforeBadge(session: session).fixedSize()
+                                    .padding(.top, 14)
+                                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                            }
                             if session.maskAloneLayer != nil || ((session.proofsColors || session.showsGamutWarning) && session.document != nil) {
                                 // At the foot of the canvas, clear of the transform box's rotation handle.
                                 VStack(spacing: 8) {
@@ -166,6 +173,13 @@ struct ContentView: View {
         }
     }
 
+    /// As wide as the toolbar allows: the window less the traffic lights and New button before it and the zoom
+    /// controls after it. Bounded, so adding tabs never pushes those aside; the strip scrolls instead.
+    private func projectTabStrip(_ workspace: ProjectWorkspace) -> some View {
+        ProjectTabStrip(workspace: workspace)
+            .frame(width: max(200, windowWidth - 352), height: 34, alignment: .center)
+    }
+
     // Split again for 1.1: the chain outgrew the type checker once more.
     @ViewBuilder private var editorChrome: some View {
         editorStack
@@ -209,7 +223,7 @@ struct ContentView: View {
         // The toolbar itself is hidden and shown by the window (see `toggleCanvasOnly`), which lays its buttons out
         // again properly; hidden here instead, it came back with the tabs over the window buttons.
         .ignoresSafeArea(.container, edges: session.canvasOnly ? .top : [])
-        .navigationTitle(session.projectURL?.deletingPathExtension().lastPathComponent ?? "Untitled")
+        .navigationTitle(session.projectURL?.deletingPathExtension().lastPathComponent ?? String(localized: "Untitled"))
         .toolbar {
             ToolbarItem(placement: .navigation) {
                 Button { requestNewCanvas() } label: { Label("New canvas", systemImage: "plus") }
@@ -217,20 +231,24 @@ struct ContentView: View {
                     .disabled(session.isImporting || session.showsBusy || session.levels != nil)
                     .modifier(NewProjectDropTarget(workspace: applicationDelegate?.workspace))
             }
-            ToolbarSpacer(.fixed, placement: .navigation)
+            // Before macOS 26 the toolbar has no spacers or shared item backgrounds: its items sit apart on their
+            // own, and the tab strip's bounded width already keeps the zoom controls in place.
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .navigation)
+            }
             if let workspace = applicationDelegate?.workspace {
-                ToolbarItem(placement: .navigation) {
-                    ProjectTabStrip(workspace: workspace)
-                        // As wide as the toolbar allows: the window less the traffic lights and New button before it
-                        // and the zoom controls after it. Bounded, so adding tabs never pushes those aside; the
-                        // strip scrolls instead.
-                        .frame(width: max(200, windowWidth - 352), height: 34, alignment: .center)
+                if #available(macOS 26.0, *) {
+                    ToolbarItem(placement: .navigation) { projectTabStrip(workspace) }
+                        .sharedBackgroundVisibility(.hidden)
+                } else {
+                    ToolbarItem(placement: .navigation) { projectTabStrip(workspace) }
                 }
-                .sharedBackgroundVisibility(.hidden)
             }
             // Absorb all remaining navigation-toolbar width before the zoom controls.
             // Without this spacer, the growing tab strip pushes the primary actions left.
-            ToolbarSpacer(.flexible, placement: .navigation)
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.flexible, placement: .navigation)
+            }
             ToolbarItem(placement: .primaryAction) {
                 Button("Fit") { session.fit() }.help("Fit canvas in window (⌘0)")
                     .accessibilityIdentifier("fitCanvas").disabled(session.document == nil)
@@ -295,7 +313,7 @@ struct ContentView: View {
         .onChange(of: session.selectionAmountOperation) { _, operation in
             if let operation {
                 selectionAmountPanel.onClose = { session.selectionAmountOperation = nil }
-                selectionAmountPanel.show(title: operation.rawValue + " Selection",
+                selectionAmountPanel.show(title: L10n.string(operation.rawValue + " Selection"),
                     content: SelectionAmountSheet(session: session, operation: operation))
             } else { selectionAmountPanel.close() }
         }
@@ -304,9 +322,11 @@ struct ContentView: View {
             if closed { filterPanel.close() }
             else {
                 filterPanel.onClose = { session.cancelFilter() }
-                let placement: FloatingPanelPlacement = session.filterEdit?.kind == .cameraRaw ? .dockedToMainWindowRight : .automatic
+                let cameraRaw = session.filterEdit?.kind == .cameraRaw
+                // Camera Raw's column of sliders opens with none of its fields being typed in; a dialog of a few
+                // amounts, as Gaussian Blur's, still opens ready for a number.
                 filterPanel.show(title: session.filterEdit?.kind.rawValue ?? "Filter", content: FilterSheet(session: session),
-                                 placement: placement)
+                                 placement: cameraRaw ? .dockedToMainWindowRight : .automatic, focusesField: !cameraRaw)
             }
         }
         .onChange(of: session.document == nil) { _, empty in
@@ -350,9 +370,9 @@ struct ContentView: View {
                     .frame(width: 62, alignment: .leading).accessibilityIdentifier("zoomStatus")
                 Text("\(document.width) × \(document.height) px").accessibilityIdentifier("canvasDimensions")
                 if let draft = session.shapeDraft, let size = session.dragOutSize {
-                    Text("\(draft.kind == .line ? "Line" : "Shape") \(size.text)").accessibilityIdentifier("shapeDimensions")
+                    Text("\(draft.kind == .line ? String(localized: "Line") : String(localized: "Shape")) \(size.text)").accessibilityIdentifier("shapeDimensions")
                 } else if let size = session.selectionSize {
-                    Text("Selection \(size.width) × \(size.height) px" + (session.selectionFeather.map { " · Feather \($0) px" } ?? ""))
+                    Text(String(localized: "Selection \(size.width) × \(size.height) px") + (session.selectionFeather.map { String(localized: " · Feather \($0) px") } ?? ""))
                         .accessibilityIdentifier("selectionDimensions")
                 }
                 Text("sRGB · Transparent")
@@ -365,7 +385,7 @@ struct ContentView: View {
                 ProgressView().controlSize(.mini)
                 Text("Importing images…")
             } else {
-                Text(session.tool == .marquee ? (session.marqueeKind == .ellipse ? "Drag an ellipse · Shift add · Option subtract · Shift again mid-drag circle · Drag inside to move · Delete clears · ⌘D deselect" : "Drag a rectangle · Shift add · Option subtract · Shift again mid-drag square · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect") : session.tool == .wand ? (session.wandMode == .object ? "Click an object to select its outline · Tab for Wand · Shift add · Option subtract · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect" : "Click to select similar colors · Tab for Object · Shift add · Option subtract · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect") : session.tool == .lasso ? (session.lassoKind == .freehand ? "Drag to select · Drag inside to move · Shift add · Option subtract · Delete clears · ⌥⌫/⌘⌫ fill · ⌘D deselect" : "Click corners · Click start, double-click or Enter to close · Delete removes corner · Escape cancel") : session.tool == .brush ? (session.brushMode == .erase ? "Drag to erase" : "Drag to paint") + " · [ ] size · Shift-[ ] hardness · 1–0 opacity · Escape cancel · Space to pan" : session.tool == .blur ? (session.blurMode == .blur ? "Drag to soften" : session.blurMode == .smudge ? "Drag to smudge" : "Drag to push pixels") + " · [ ] size · Shift-[ ] hardness · 1–0 strength · Space to pan" : session.tool == .cloneStamp ? "Option-click to set the source · Drag to clone · [ ] size · Shift-[ ] hardness · 1–0 opacity · Space to pan" : session.tool == .spotHealing ? "Drag over blemishes to heal · [ ] size · Shift-[ ] hardness · Escape cancel · Space to pan" : session.tool == .type ? "Drag a text box · Click text to edit · Drag box handles to resize · ⌘Return finish · Escape cancel" : session.tool == .shape ? "Drag to draw a shape on a new layer · Shift \(session.shapeKind == .line ? "45°" : session.shapeKind == .rectangle ? "square" : "circle") · Option from center · Shift-U or Tab for the next shape · Escape cancel · Space to pan" : session.tool == .gradient ? "Drag to draw · Drag ends to adjust · Shift 45° · 1–0 opacity · Enter apply · Escape cancel" : session.tool == .crop ? "Drag to crop · Enter apply · Escape cancel · Space to pan" : session.tool == .move ? "Drag to move · Handles to resize · Circle to rotate · 1–0 layer opacity · Space to pan" : session.tool == .hand ? "Drag to pan · Pinch to zoom" : session.tool == .idle ? "No tool selected · Press a tool's key to pick one · Space to pan" : "Click to zoom in · Option-click to zoom out · Drag right or left to zoom smoothly · Space to pan")
+                Text(session.tool == .marquee ? (session.marqueeKind == .ellipse ? String(localized: "Drag an ellipse · Shift add · Option subtract · Shift again mid-drag circle · Drag inside to move · Delete clears · ⌘D deselect") : String(localized: "Drag a rectangle · Shift add · Option subtract · Shift again mid-drag square · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect")) : session.tool == .wand ? (session.wandMode == .object ? String(localized: "Click an object to select its outline · Tab for Wand · Shift add · Option subtract · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect") : String(localized: "Click to select similar colors · Tab for Object · Shift add · Option subtract · Drag inside to move · ⌘-drag moves pixels · Delete clears · ⌘D deselect")) : session.tool == .lasso ? (session.lassoKind == .freehand ? String(localized: "Drag to select · Drag inside to move · Shift add · Option subtract · Delete clears · ⌥⌫/⌘⌫ fill · ⌘D deselect") : String(localized: "Click corners · Click start, double-click or Enter to close · Delete removes corner · Escape cancel")) : session.tool == .brush ? (session.brushMode == .erase ? String(localized: "Drag to erase") : String(localized: "Drag to paint")) + String(localized: " · [ ] size · Shift-[ ] hardness · 1–0 opacity · Escape cancel · Space to pan") : session.tool == .blur ? (session.blurMode == .blur ? String(localized: "Drag to soften") : session.blurMode == .smudge ? String(localized: "Drag to smudge") : String(localized: "Drag to push pixels")) + String(localized: " · [ ] size · Shift-[ ] hardness · 1–0 strength · Space to pan") : session.tool == .cloneStamp ? String(localized: "Option-click to set the source · Drag to clone · [ ] size · Shift-[ ] hardness · 1–0 opacity · Space to pan") : session.tool == .spotHealing ? String(localized: "Drag over blemishes to heal · [ ] size · Shift-[ ] hardness · Escape cancel · Space to pan") : session.tool == .type ? String(localized: "Drag a text box · Click text to edit · Drag box handles to resize · ⌘Return finish · Escape cancel") : session.tool == .shape ? String(localized: "Drag to draw a shape on a new layer · Shift \(session.shapeKind == .line ? "45°" : session.shapeKind == .rectangle ? L10n.string("square") : L10n.string("circle")) · Option from center · Shift-U or Tab for the next shape · Escape cancel · Space to pan") : session.tool == .gradient ? String(localized: "Drag to draw · Drag ends to adjust · Shift 45° · 1–0 opacity · Enter apply · Escape cancel") : session.tool == .crop ? String(localized: "Drag to crop · Enter apply · Escape cancel · Space to pan") : session.tool == .move ? String(localized: "Drag to move · Handles to resize · Circle to rotate · 1–0 layer opacity · Space to pan") : session.tool == .hand ? String(localized: "Drag to pan · Pinch to zoom") : session.tool == .idle ? String(localized: "No tool selected · Press a tool's key to pick one · Space to pan") : String(localized: "Click to zoom in · Option-click to zoom out · Drag right or left to zoom smoothly · Space to pan"))
             }
         }
         .font(.system(size: 11).monospacedDigit()).foregroundStyle(.secondary)

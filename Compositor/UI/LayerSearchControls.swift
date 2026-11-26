@@ -151,7 +151,7 @@ struct LayersHeader: View {
                 get: { session.layerTypeFilter.isEmpty },
                 set: { on in if on { session.clearLayerTypeFilter() } }
             ))
-            .labelReservedIconWidth(16)
+            .reservingIconWidth(16)
             .accessibilityIdentifier("layerFilterAll")
             Divider()
             ForEach(LayerType.allCases.filter { $0 != .selected }, id: \.self) { typeToggle($0) }
@@ -166,9 +166,32 @@ struct LayersHeader: View {
             get: { session.layerTypeFilter.contains(kind) },
             set: { on in if on { session.layerTypeFilter.insert(kind) } else { session.layerTypeFilter.remove(kind) } }
         ))
-        .labelReservedIconWidth(16)
+        .reservingIconWidth(16)
         .accessibilityLabel(kind.filterLabel)
         .accessibilityIdentifier(kind.accessibilityID)
+    }
+}
+
+private extension View {
+    /// Every toggle's icon in the same width, so their titles line up whatever the symbol's own width. Before
+    /// macOS 26 there is no reserved width to ask for, so the icon is framed to it instead.
+    @ViewBuilder func reservingIconWidth(_ width: CGFloat) -> some View {
+        if #available(macOS 26.0, *) {
+            labelReservedIconWidth(width)
+        } else {
+            labelStyle(FixedIconWidthLabelStyle(width: width))
+        }
+    }
+}
+
+private struct FixedIconWidthLabelStyle: LabelStyle {
+    let width: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon.frame(width: width)
+            configuration.title
+        }
     }
 }
 
@@ -204,7 +227,7 @@ private struct PlainSearchText: NSViewRepresentable {
         field.drawsBackground = false
         field.focusRingType = .none
         field.font = .systemFont(ofSize: NSFont.systemFontSize)
-        field.placeholderString = "Search Layers"
+        field.placeholderString = String(localized: "Search Layers")
         field.cell?.usesSingleLineMode = true
         field.cell?.isScrollable = true
         field.delegate = context.coordinator

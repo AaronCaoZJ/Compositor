@@ -283,6 +283,43 @@ nonisolated enum PixelFilter {
     /// distance; Core Image tapers like a Gaussian whose spread is about its radius (measured on a
     /// single dot). An even streak of length d spreads d / √12, so this radius matches its spread.
     static let motionRadiusPerPixel = 1 / 12.0.squareRoot()
+
+    /// `CIMotionBlur` with what it loses given back. On macOS 15 the weights along its streak add up to a little
+    /// under one, 1 to 3% under as the radius goes, so all it blurs comes out that much fainter and a solid picture
+    /// that much see-through. What it leaves of plain white is the share it keeps, at any angle, and the streak is
+    /// scaled back up by it. Where it loses nothing, as on macOS 26, this is `CIMotionBlur` alone.
+    static func motionBlurred(_ image: CIImage, radius: Double, angle: Double) -> CIImage {
+        let streaked = image.applyingFilter("CIMotionBlur", parameters: [kCIInputRadiusKey: radius, kCIInputAngleKey: angle])
+        let kept = motionShareKept(radius)
+        guard kept > 0, abs(1 - kept) > 0.0001 else { return streaked }
+        let back = 1 / kept
+        return streaked.applyingFilter("CIColorMatrix", parameters: [
+            "inputRVector": CIVector(x: back, y: 0, z: 0, w: 0), "inputGVector": CIVector(x: 0, y: back, z: 0, w: 0),
+            "inputBVector": CIVector(x: 0, y: 0, z: back, w: 0), "inputAVector": CIVector(x: 0, y: 0, z: 0, w: back),
+        ])
+    }
+
+    /// The shares measured: a Motion Blur layer redraws at the same radius on every canvas frame.
+    private static let motionLock = NSLock()
+    nonisolated(unsafe) private static var motionShares: [Double: Double] = [:]
+
+    /// The share of what it blurs that `CIMotionBlur` keeps at `radius`: the alpha it leaves of plain white, at floats.
+    private static func motionShareKept(_ radius: Double) -> Double {
+        guard radius > 0 else { return 1 }
+        if let kept = motionLock.withLock({ motionShares[radius] }) { return kept }
+        let white = CIImage(color: CIColor(red: 1, green: 1, blue: 1, alpha: 1))
+            .applyingFilter("CIMotionBlur", parameters: [kCIInputRadiusKey: radius, kCIInputAngleKey: 0.0])
+        var pixel = [Float](repeating: 1, count: 4)
+        PixelAdjust.ciContext.render(white, toBitmap: &pixel, rowBytes: 16, bounds: CGRect(x: 0, y: 0, width: 1, height: 1),
+                                     format: .RGBAf, colorSpace: nil)
+        let kept = Double(pixel[3])
+        motionLock.withLock {
+            // A drag of Distance asks for a radius a frame.
+            if motionShares.count >= 512 { motionShares.removeAll() }
+            motionShares[radius] = kept
+        }
+        return kept
+    }
     /// Remove Distortion at ±100 moves the image's corners by this share of their distance from the center.
     static let lensStrength = 0.35
 
@@ -315,6 +352,8 @@ nonisolated enum PixelFilter {
         let reach = settings.rgbSplitReach * hypot(toPixels.a, toPixels.b)
         let angle = settings.rgbSplitAngle * .pi / 180
         let sides = job.canvasSides
+        let sideMask: UInt32 = (sides.contains(.left) ? 1 : 0) | (sides.contains(.right) ? 2 : 0)
+            | (sides.contains(.top) ? 4 : 0) | (sides.contains(.bottom) ? 8 : 0)
         // Enough samples that neighbors sit a pixel or two apart, within what the GPU does at once.
         let spread = settings.rgbSplitRadial ? distance * 2 : distance, smear = settings.rgbSplitRadial ? blur * 2 : blur
         try gpu.run(context, MetalDispersion.Parameters(
@@ -322,8 +361,7 @@ nonisolated enum PixelFilter {
             // Rows run top-down here, so up on screen is a smaller row.
             direction: SIMD2(Float(cos(angle)), Float(-sin(angle))),
             distance: Float(distance), blur: Float(blur), reach: Float(reach), radial: settings.rgbSplitRadial ? 1 : 0,
-            sides: (sides.contains(.left) ? 1 : 0) | (sides.contains(.right) ? 2 : 0) | (sides.contains(.top) ? 4 : 0)
-                | (sides.contains(.bottom) ? 8 : 0),
+            sides: sideMask,
             spectral: distance > 0 ? UInt32(min(32, max(3, Int(spread)))) : 1,
             smear: blur > 0 ? UInt32(min(24, max(2, Int(smear / 2)))) : 1))
         guard let image = context.makeImage() else { throw ExportError.render }
@@ -393,10 +431,9 @@ nonisolated enum PixelFilter {
                                                         light: CGPoint(x: pixel.x, y: Double(height) - pixel.y)), job: job)
         case .motionBlur:
             // Core Image's y axis points up, so its counterclockwise angle matches Photoshop's.
-            let streaked = extending(edges, past: job.canvasSides, of: extent).applyingFilter("CIMotionBlur", parameters: [
-                kCIInputRadiusKey: settings.distance * job.scale * motionRadiusPerPixel,
-                kCIInputAngleKey: settings.angle * .pi / 180,
-            ])
+            let streaked = motionBlurred(extending(edges, past: job.canvasSides, of: extent),
+                                         radius: settings.distance * job.scale * motionRadiusPerPixel,
+                                         angle: settings.angle * .pi / 180)
             image = try render(streaked.cropped(to: extent), job: job)
         case .addNoise:
             // C, not Core Image: its random generator is uniform only, and Gaussian noise is needed too.
@@ -535,6 +572,18 @@ nonisolated enum PixelFilter {
     }
 }
 
+/// Everything a Camera Raw preview is made from besides the pixels: a render with an equal key would come out the
+/// same, so there is none to make.
+nonisolated struct FilterPreviewKey: Equatable {
+    var settings: FilterSettings
+    var clipping: CameraRawClipping?
+    var showsShadowClipping: Bool
+    var showsHighlightClipping: Bool
+    var visualizesPointColor: Int
+    var showsSharpenMask: Bool
+    var sourceVersion: UInt64
+}
+
 @Observable
 final class FilterEdit {
     let kind: FilterKind
@@ -568,7 +617,7 @@ final class FilterEdit {
     var previewError: String?
     var preparing = false
     /// Add Noise's grain, fixed while the panel is open so changing Amount doesn't reshuffle it.
-    let seed = UInt32.random(in: .min ... .max)
+    private(set) var seed = UInt32.random(in: .min ... .max)
     /// Camera Raw panel eyes. Off drops that group's amounts from the preview and from OK, without clearing the sliders.
     var showsCameraRawLight = true
     var showsCameraRawColor = true
@@ -641,6 +690,57 @@ final class FilterEdit {
     @ObservationIgnored var preparedSettings: FilterSettings?
     @ObservationIgnored var pending: FilterJob?
     @ObservationIgnored var previewTask: Task<Void, Never>?
+    /// Camera Raw on a large layer shows a draft first, made from a copy no longer than `draftLimit`, and the layer's
+    /// own pixels once the controls rest (`renderFilterPreview`, `refineFilterPreview`): a 42-megapixel photo takes a
+    /// second or two to render whole with Shadows, Clarity or Detail in play, and a tenth of that as a draft. Nil for
+    /// a layer small enough to render whole each time, and for an HDR one, whose preview is made another way.
+    @ObservationIgnored private(set) var draft: (image: CGImage, scale: CGFloat, mapping: CGAffineTransform)?
+    /// As long as Lightroom's Smart Previews: more pixels than a photo fitted to a laptop's screen shows.
+    static let draftLimit: CGFloat = 2560
+    /// Below this a layer renders whole fast enough to need no draft (the lookup's own GPU threshold).
+    static let draftMinimumPixels = 8_000_000
+    /// How long the controls rest before the layer's own pixels are rendered.
+    static let refineDelay: Duration = .milliseconds(160)
+    /// A full-size render this quick follows a drag well enough to show in place of a draft.
+    static let keepsUpSeconds = 0.15
+    /// `pending` as a draft, when it is to be one, and what `pending` is made from.
+    @ObservationIgnored var pendingDraft: FilterJob?
+    @ObservationIgnored var pendingKey: FilterPreviewKey?
+    /// What `preparedPreview` was made from, and whether it is a draft still waiting for the layer's own pixels.
+    @ObservationIgnored var preparedKey: FilterPreviewKey?
+    @ObservationIgnored var preparedIsDraft = false
+    /// Camera Raw's render put aside while Preview is off, so Before/After (\) has nothing to render on the way back.
+    @ObservationIgnored var heldPreview: (image: CGImage, transform: LayerTransform?, settings: FilterSettings?,
+                                           key: FilterPreviewKey, isDraft: Bool)?
+    /// Waits for the controls to rest, then renders the layer's own pixels.
+    @ObservationIgnored var refineTask: Task<Void, Never>?
+    /// The full-size render in flight. The next one waits for it, so there is only ever one.
+    @ObservationIgnored var fullRender: Task<Void, Never>?
+    /// How long the last full-size render took: one that keeps up with a drag needs no draft before it.
+    @ObservationIgnored var fullRenderSeconds: Double?
+    /// Camera Raw on a layer whose pixels are still what a RAW file developed to (`RawOrigin`): the develop's own
+    /// settings, which the panel's RAW section shows. Changed there, the file is developed again, and that takes the
+    /// layer's place as what the rest of the panel works on (`EditorSession.updateCameraRawDevelop`): exposure and
+    /// white balance set where the file's latitude still is, not on pixels that have lost it. Nil for any other layer.
+    var rawSettings: RawDevelopSettings?
+    /// The layer came from a project that kept its RAW recipe, and the file can't be found: the panel says so where
+    /// its RAW section would be, and adjusts the layer's pixels.
+    var rawFileAway = false
+    @ObservationIgnored private(set) var rawOrigin: RawOrigin?
+    @ObservationIgnored private(set) var rawDeveloper: RawDeveloper?
+    /// What `previewSource`, and the draft, were last developed with.
+    @ObservationIgnored private(set) var rawSourceSettings: RawDevelopSettings?
+    @ObservationIgnored private(set) var rawDraftSettings: RawDevelopSettings?
+    @ObservationIgnored var rawDraftTask: Task<Void, Never>?
+    @ObservationIgnored var rawFullTask: Task<Void, Never>?
+    /// `previewSource` is an older develop than the RAW section asks for: only a draft shows what it asks for.
+    var rawSourceIsStale: Bool { rawSettings != nil && rawSourceSettings != rawSettings }
+    /// OK develops the file again: the RAW section has moved from what the layer was developed with, or the layer's
+    /// pixels have Camera Raw's sliders in them already and aren't a develop to apply them to.
+    var redevelopsRaw: Bool { rawSettings != nil && (rawSettings != rawOrigin?.settings || rawOrigin?.recipe != nil) }
+    /// A layer with Camera Raw's sliders in its pixels, just opened: there is nothing to preview from until the file
+    /// has been developed, and meanwhile the layer shows as it is, which is how it will look.
+    var awaitsRawSource: Bool { rawSettings != nil && rawSourceSettings == nil && rawDraftSettings == nil }
     /// Volumetric Light's first preview, held for the depth model (`beginFilter`).
     @ObservationIgnored var waitsForDepth = false
     /// Previews render from a copy no larger than this on its longest side.
@@ -660,6 +760,7 @@ final class FilterEdit {
         previewScale = ready.previewScale
         previewMapping = ready.previewMapping
         hdrPreviewSource = try Self.hdrPreview(of: asset, inside: nil, grid: nil, size: ready.previewSource)
+        draft = try Self.draft(kind: kind, from: ready.previewSource, placed: layer.transform, hdr: asset.isHDR)
         // A rotated layer's sides don't run along the canvas's, so it has none at its edge.
         if let canvas, kind == .gaussianBlur || kind == .motionBlur || kind == .progressiveBlur, layer.transform.rotation == 0 {
             let inPixels = CGRect(origin: .zero, size: canvas).applying(ready.mapping.inverted())
@@ -756,7 +857,22 @@ final class FilterEdit {
         previewMapping = ready.previewMapping
         hdrPreviewSource = try Self.hdrPreview(of: original, inside: grownInside,
                                                grid: CGSize(width: source.width, height: source.height), size: ready.previewSource)
+        draft = try Self.draft(kind: kind, from: ready.previewSource, placed: placed, hdr: original.isHDR)
         previewSourceVersion &+= 1
+    }
+
+    /// Camera Raw's draft copy of a large layer, with its scale and its place in the document. About 15 ms for a
+    /// 42-megapixel photo, so it is made as the panel opens.
+    private static func draft(kind: FilterKind, from source: CGImage, placed: LayerTransform, hdr: Bool) throws
+        -> (image: CGImage, scale: CGFloat, mapping: CGAffineTransform)? {
+        guard kind == .cameraRaw, !hdr, source.width * source.height >= draftMinimumPixels else { return nil }
+        let factor = draftLimit / CGFloat(max(source.width, source.height))
+        guard factor < 1 else { return nil }
+        let w = max(1, Int(CGFloat(source.width) * factor)), h = max(1, Int(CGFloat(source.height) * factor))
+        let context = try BrushRaster.context(width: w, height: h, mask: false)
+        BrushRaster.draw(source, in: CGRect(x: 0, y: 0, width: w, height: h), mask: false, context: context)
+        guard let small = context.makeImage() else { throw ExportError.render }
+        return (small, CGFloat(w) / CGFloat(source.width), BrushRaster.pixelToDocument(placed, width: w, height: h))
     }
 
     /// An HDR layer's pixels laid out as `size` (the preview's source) is: padded onto `grid` at `inside` when the layer
@@ -785,9 +901,48 @@ final class FilterEdit {
         }
         return value
     }
-    var previewJob: FilterJob {
-        var job = FilterJob(kind: kind, image: previewSource, settings: renderSettings(), scale: previewScale, selection: selection,
-                            mapping: previewMapping, seed: seed)
+    var previewJob: FilterJob { job(from: previewSource, scale: previewScale, mapping: previewMapping) }
+
+    /// The preview made from the draft copy instead. Nil when there is none, and when the full render is the better
+    /// frame: the canvas is zoomed in past what the draft holds (`shown` is screen pixels per layer pixel), where a
+    /// draft would look soft, and the last full render kept up with a drag, as it does with only Light or Color in
+    /// play (about 0.1 s for 42 megapixels). Zoomed in, the first render is a full one, which is how that is known.
+    func draftJob(shown: CGFloat) -> FilterJob? {
+        guard let draft else { return nil }
+        // While a RAW control moves, the draft is the only source developed with what it asks for.
+        if !rawSourceIsStale, shown > draft.scale * 1.25, fullRenderSeconds ?? 0 <= Self.keepsUpSeconds { return nil }
+        return job(from: draft.image, scale: draft.scale, mapping: draft.mapping)
+    }
+
+    /// Camera Raw's RAW section for this layer, whose pixels `origin`'s file developed to.
+    func developsRaw(from origin: RawOrigin) {
+        rawOrigin = origin
+        rawSettings = origin.settings
+        // The layer's pixels are the develop, and the preview's source already, unless the sliders are in them too.
+        rawSourceSettings = origin.recipe == nil ? origin.settings : nil
+        rawDraftSettings = rawSourceSettings
+        if let recipe = origin.recipe { settings.cameraRaw = recipe; seed = origin.seed }
+        rawDeveloper = RawDeveloper(origin)
+    }
+
+    /// The file developed again at a draft's size, in the draft's place.
+    func takeRawDraft(_ image: CGImage, developedWith settings: RawDevelopSettings) {
+        draft = (image, CGFloat(image.width) / CGFloat(max(1, previewSource.width)),
+                 BrushRaster.pixelToDocument(transform, width: image.width, height: image.height))
+        rawDraftSettings = settings
+        previewSourceVersion &+= 1
+    }
+
+    /// The file developed again whole, as what the preview is made from, with a draft made from it.
+    func takeRawSource(_ image: CGImage, developedWith settings: RawDevelopSettings) throws {
+        try prepare(from: image, placed: transform)
+        rawSourceSettings = settings
+        rawDraftSettings = settings
+    }
+
+    private func job(from image: CGImage, scale: CGFloat, mapping: CGAffineTransform) -> FilterJob {
+        var job = FilterJob(kind: kind, image: image, settings: renderSettings(), scale: scale, selection: selection,
+                            mapping: mapping, seed: seed)
         job.canvas = canvas
         job.canvasSides = canvasSides
         job.cameraRawClipping = cameraRawClipping
@@ -797,9 +952,23 @@ final class FilterEdit {
         job.showsSharpenMask = cameraRawSharpenMask
         if kind == .cameraRaw {
             job.cameraRawBrightness = previewBrightness
-            job.cameraRawUsesGPU = previewSource.width * previewSource.height >= MetalCameraRawLookup.minimumPixels
+            job.cameraRawUsesGPU = image.width * image.height >= MetalCameraRawLookup.minimumPixels
         }
         return job
+    }
+
+    var previewKey: FilterPreviewKey {
+        FilterPreviewKey(settings: renderSettings(), clipping: cameraRawClipping, showsShadowClipping: showsShadowClipping,
+                         showsHighlightClipping: showsHighlightClipping, visualizesPointColor: pointColorVisualizeIndex,
+                         showsSharpenMask: cameraRawSharpenMask, sourceVersion: previewSourceVersion)
+    }
+
+    /// A document point in the pixels of `image`, the preview that is showing: a draft is smaller than the source
+    /// `previewMapping` is for.
+    func previewPixel(at point: CGPoint, in image: CGImage) -> CGPoint {
+        let pixel = point.applying(previewMapping.inverted())
+        return CGPoint(x: pixel.x * CGFloat(image.width) / CGFloat(max(1, previewSource.width)),
+                       y: pixel.y * CGFloat(image.height) / CGFloat(max(1, previewSource.height)))
     }
 }
 
@@ -866,6 +1035,13 @@ extension EditorSession {
             if fillsCanvas { edit.canvas = canvas }
             edit.startedEmpty = startedEmpty
             edit.repeating = repeating
+            // A layer still as a RAW file developed it gets the panel's RAW section. Not with a selection, which
+            // keeps the rest of the layer as it is, where a new develop changes all of it.
+            if kind == .cameraRaw, !repeating, adjustmentOriginal == nil, edit.selection == nil {
+                // A file that was away when the project opened is looked for again here.
+                if let origin = RawOrigins.shared.reconnected(layer.asset) { edit.developsRaw(from: origin) }
+                else { edit.rawFileAway = RawOrigins.shared.isAway(layer.asset) }
+            }
             filterEdit = edit
             // Volumetric Light's depth model, downloaded the first time: the first preview waits for it, so the fog
             // doesn't draw from its own guess and then jump to the depth. Fetching and compiling it takes about 3 seconds;
@@ -896,6 +1072,17 @@ extension EditorSession {
             }
             if kind == .cameraRaw, edit.previewSource.width * edit.previewSource.height >= MetalCameraRawLookup.minimumPixels {
                 Task.detached(priority: .utility) { _ = MetalCameraRawLookup.shared }
+            }
+            // The tables are unpacked the first time they're used, about 80 ms: as the panel opens, so the first
+            // slider moved doesn't wait for them.
+            if kind == .cameraRaw {
+                Task.detached(priority: .userInitiated) { _ = CameraRawTables.tables; _ = CameraRawShadows.tables }
+            }
+            // And the RAW file decoded, about a second: after it, a RAW control's change renders in milliseconds. A
+            // layer kept as a recipe is developed for its preview straight away.
+            if edit.awaitsRawSource { beginCameraRawDevelop(edit) }
+            else if let developer = edit.rawDeveloper, let developed = edit.rawSettings {
+                Task.detached(priority: .userInitiated) { _ = await developer.develop(developed, limit: FilterEdit.draftLimit) }
             }
             // An automatic filter commits what its preview made, so it still needs one.
             if !waitsForDepth { updateFilter(edit.settings, preview: !repeating || kind.isAutomatic) }
@@ -955,10 +1142,44 @@ extension EditorSession {
             catch { brushError = error.localizedDescription }
         }
         if previewAdjustmentEditing(preview: preview) { return }
+        // The file is still being developed: its arrival renders whatever the controls say by then.
+        if edit.awaitsRawSource { brushRevision += 1; return }
         if edit.kind.isAutomatic, edit.preparedPreview != nil, edit.preparedSettings == edit.settings { brushRevision += 1; return }
         guard preview else {
-            edit.pending = nil; edit.preparedPreview = nil; brushRevision += 1
+            // Camera Raw's render is put aside, not dropped: Before/After flips between it and the layer with nothing
+            // to wait for.
+            if edit.kind == .cameraRaw, let image = edit.preparedPreview, let key = edit.preparedKey {
+                edit.heldPreview = (image, edit.preparedTransform, edit.preparedSettings, key, edit.preparedIsDraft)
+            }
+            edit.pending = nil; edit.pendingDraft = nil; edit.pendingKey = nil
+            edit.preparedPreview = nil; edit.preparedKey = nil; brushRevision += 1
             return
+        }
+        if edit.kind == .cameraRaw {
+            let key = edit.previewKey
+            if edit.pending == nil, edit.previewTask == nil {
+                // After, back from Before with nothing changed: the render put aside goes back up.
+                if edit.preparedPreview == nil, let held = edit.heldPreview, held.key == key {
+                    edit.preparedPreview = held.image
+                    edit.preparedTransform = held.transform
+                    edit.preparedSettings = held.settings
+                    edit.preparedKey = held.key
+                    edit.preparedIsDraft = held.isDraft
+                }
+                // Showing already, as when a control writes the value it has: nothing to render.
+                if edit.preparedPreview != nil, edit.preparedKey == key {
+                    edit.heldPreview = nil
+                    brushRevision += 1
+                    if edit.preparedIsDraft { refineFilterPreview(edit) }
+                    return
+                }
+            }
+            // A change: the layer's own pixels wait for the controls to rest again.
+            edit.heldPreview = nil
+            edit.refineTask?.cancel()
+            edit.pendingKey = key
+            let shown = viewport.zoom * edit.transform.size.width / CGFloat(max(1, edit.original.image.width))
+            edit.pendingDraft = edit.draftJob(shown: shown)
         }
         edit.pending = edit.previewJob
         edit.pendingTransform = edit.grownTransform
@@ -970,7 +1191,19 @@ extension EditorSession {
     private func renderFilterPreview(_ edit: FilterEdit) {
         guard filterEdit === edit, edit.previewTask == nil, var job = edit.pending else { return }
         if job.kind == .cameraRaw { job.cameraRawBrightness = edit.previewBrightness }
-        edit.pending = nil
+        // The layer's own pixels, which the adaptive sliders are measured from even when a draft is what renders, so
+        // the draft and the full render that replaces it agree. While a RAW control moves, those are of an older
+        // develop, and the draft is measured instead.
+        let whole = edit.rawSourceIsStale ? edit.pendingDraft?.image ?? job.image : job.image
+        let key = edit.pendingKey
+        var drafted = false
+        if var draft = edit.pendingDraft {
+            draft.cameraRawBrightness = job.cameraRawBrightness
+            job = draft
+            drafted = true
+        }
+        edit.pending = nil; edit.pendingDraft = nil; edit.pendingKey = nil
+        let started = CFAbsoluteTimeGetCurrent()
         let placement = edit.pendingTransform
         let sourceVersion = edit.previewSourceVersion
         let hdrSource = edit.kind.isAutomatic ? nil : edit.hdrPreviewSource
@@ -981,7 +1214,7 @@ extension EditorSession {
                 var run = job
                 // Measure once on the worker, then reuse it for every slider update in this session.
                 if run.kind == .cameraRaw, run.cameraRawBrightness == nil {
-                    run.cameraRawBrightness = CameraRawTables.brightness(of: run.image)
+                    run.cameraRawBrightness = CameraRawTables.brightness(of: whole)
                 }
                 do {
                     // An HDR layer previews from its HDR pixels, as OK makes it, shown clipped to white.
@@ -1015,10 +1248,87 @@ extension EditorSession {
                 edit.preparedPreview = result.0
                 edit.preparedTransform = placement
                 edit.preparedSettings = current ? job.settings : nil
+                edit.preparedKey = current && result.0 != nil ? key : nil
+                edit.preparedIsDraft = drafted
                 self.brushRevision += 1
             }
+            if job.kind == .cameraRaw, !drafted, result.0 != nil { edit.fullRenderSeconds = CFAbsoluteTimeGetCurrent() - started }
+            // Nothing newer waiting: the controls may be resting, and the draft's place is taken once they have.
+            if drafted, edit.pending == nil { self.refineFilterPreview(edit) }
             self.renderFilterPreview(edit)
         }
+    }
+
+    /// The layer's own pixels in place of a draft, once the controls have rested for `refineDelay`. A change in the
+    /// meantime cancels this and starts over from a draft, which never waits for a full-size render: one already
+    /// running is left to finish and its result dropped, and the next waits for it, so there is only ever one.
+    /// `rest` is none when the controls are known to have rested already, as after a RAW develop that waited for them.
+    func refineFilterPreview(_ edit: FilterEdit, after rest: Duration = FilterEdit.refineDelay) {
+        // Not from a RAW develop older than the one asked for: the new one starts this again when it arrives.
+        guard filterEdit === edit, edit.kind == .cameraRaw, !edit.committing, !edit.rawSourceIsStale else { return }
+        var job = edit.previewJob
+        let key = edit.previewKey
+        let placement = edit.grownTransform
+        edit.refineTask?.cancel()
+        edit.refineTask = Task { @MainActor [weak self, weak edit] in
+            try? await Task.sleep(for: rest)
+            await edit?.fullRender?.value
+            guard !Task.isCancelled, let self, let edit, self.filterEdit === edit, !edit.committing else { return }
+            job.cameraRawBrightness = edit.previewBrightness
+            let run = job
+            let started = CFAbsoluteTimeGetCurrent()
+            let render = Task.detached(priority: .userInitiated) { () -> (CGImage?, CameraRawScope?) in
+                guard let made = try? CameraRawScope.preview(run) else { return (nil, nil) }
+                return (made.image, made.scope)
+            }
+            let running = Task { _ = await render.value }
+            edit.fullRender = running
+            let result = await render.value
+            if edit.fullRender == running { edit.fullRender = nil }
+            guard self.filterEdit === edit, !edit.committing else {
+                // The panel closed while this rendered, after its buffers were let go: let go of them again.
+                if run.cameraRawUsesGPU { Task.detached(priority: .utility) { MetalCameraRawLookup.shared?.discardBuffers() } }
+                return
+            }
+            if result.0 != nil { edit.fullRenderSeconds = CFAbsoluteTimeGetCurrent() - started }
+            // Stale: a control moved while it rendered, and a draft of the newer settings is showing or on its way.
+            guard !Task.isCancelled, key == edit.previewKey, let image = result.0 else { return }
+            guard edit.preview else {
+                // Before is up: it takes the draft's place among what is put aside.
+                if edit.heldPreview?.key == key { edit.heldPreview = (image, placement, run.settings, key, false) }
+                return
+            }
+            edit.preparedPreview = image
+            edit.preparedTransform = placement
+            edit.preparedSettings = run.settings
+            edit.preparedKey = key
+            edit.preparedIsDraft = false
+            if let scope = result.1 { edit.cameraRawScope = scope }
+            self.brushRevision += 1
+        }
+    }
+
+    /// Before/After (\): flips the open panel's Preview, so the canvas shows the layer as it was, then as the panel
+    /// leaves it, as Lightroom's key does. Not for an adjustment layer, whose eye in the Layers panel shows the picture
+    /// without it. False when no panel with a preview is open.
+    @discardableResult func toggleBeforeAfter() -> Bool {
+        guard adjustmentOriginal == nil else { return false }
+        if let edit = filterEdit {
+            guard !edit.committing, !edit.repeating else { return false }
+            updateFilter(edit.settings, preview: !edit.preview)
+        } else if let edit = levels {
+            updateLevels(edit.settings, preview: !edit.preview)
+        } else if let edit = hueSaturation {
+            updateHueSaturation(edit.settings, preview: !edit.preview)
+        } else { return false }
+        return true
+    }
+
+    /// The canvas shows the layer as it was, an open panel's Preview being off.
+    var showsBefore: Bool {
+        guard adjustmentOriginal == nil else { return false }
+        if let edit = filterEdit { return !edit.preview && !edit.repeating }
+        return levels?.preview == false || hueSaturation?.preview == false
     }
 
     func cancelFilter() {
@@ -1031,6 +1341,8 @@ extension EditorSession {
         if finishAdjustmentEditing(commit: false) { return }
         guard let edit = filterEdit, !edit.committing else { return }
         edit.previewTask?.cancel()
+        edit.refineTask?.cancel()
+        edit.rawDraftTask?.cancel(); edit.rawFullTask?.cancel()
         if edit.kind == .cameraRaw, edit.previewJob.cameraRawUsesGPU {
             Task.detached(priority: .utility) { MetalCameraRawLookup.shared?.discardBuffers() }
         }
@@ -1067,9 +1379,16 @@ extension EditorSession {
                 (edit.settings.tonalShadows == 0 && edit.settings.tonalMidtones == 0 && edit.settings.tonalHighlights == 0)))
             || (edit.kind == .exposure && edit.settings.exposure == ExposureSettings())
             || (edit.kind == .grain && edit.settings.grain.amount == 0)
-            || (edit.kind == .cameraRaw && rendered.cameraRaw.isIdentity) { cancelFilter(); return }
+            // (A new develop of the RAW file is a change by itself, with every slider below it at rest.)
+            || (edit.kind == .cameraRaw && rendered.cameraRaw.isIdentity && !edit.redevelopsRaw) { cancelFilter(); return }
+        // A layer kept as a recipe, opened and left as it was: nothing to render again.
+        if let origin = edit.rawOrigin, let recipe = origin.recipe, edit.rawSettings == origin.settings, rendered.cameraRaw == recipe {
+            cancelFilter(); return
+        }
         edit.committing = true
         edit.previewTask?.cancel()
+        edit.refineTask?.cancel()
+        edit.rawDraftTask?.cancel(); edit.rawFullTask?.cancel()
         if edit.kind != .cameraRaw { filterSettings = edit.settings }
         if edit.kind.repeatsAsLastFilter { lastFilter = edit.kind }
         isProjectBusy = true
@@ -1083,6 +1402,13 @@ extension EditorSession {
         // Remove Background masks the background out rather than erasing it, so it can be brought back at any time
         // by painting the mask, disabling it, or deleting it.
         if edit.kind == .removeBackground { await commitBackgroundMask(edit); return }
+        // A RAW layer is made from its recipe: the file, what it is developed with, and the sliders. By the routine
+        // that makes its pixels again when a step in the history is returned to, so undo brings back what OK made.
+        let recipe = edit.rawOrigin.flatMap { origin in
+            edit.rawSettings.map {
+                origin.developed(with: $0, recipe: rendered.cameraRaw.isIdentity ? nil : rendered.cameraRaw, seed: edit.seed)
+            }
+        }
         // A blur that keeps the layer's transparency has no use for room around it (opening the panel may have made
         // some for the blur it started with): it's applied to the layer as it was, which leaves its size alone.
         let keepsOutline = edit.kind == .gaussianBlur && edit.settings.preserveTransparency
@@ -1106,7 +1432,9 @@ extension EditorSession {
             let deepGrid = keepsOutline ? nil : edit.grownImage.flatMap { grownImage in
                 edit.grownInside.map { (size: CGSize(width: grownImage.width, height: grownImage.height), inside: $0) }
             }
+            let recipeName = recipe?.recipe == nil ? edit.original.name : edit.kind.rawValue
             let made = try await Task.detached(priority: .userInitiated) { () -> (asset: ImportedImage, transform: LayerTransform?) in
+                if let recipe { return (try recipe.render(name: recipeName), grown) }
                 // Exposure on an HDR layer, exactly: turned down, it brings highlights into view.
                 if let deep, DeepLayer.isHDR(deep), job.kind == .exposure {
                     var result = try DeepLayer.exposure(deep, job.settings.exposure)
@@ -1176,6 +1504,9 @@ extension EditorSession {
             beginEdit(edit.kind.rawValue)
             document?.layers[index] = edited
             endEdit()
+            // A RAW layer stays one: its new pixels are remembered as the file, what it was developed with and the
+            // sliders applied, so Camera Raw opens on it again with all of them where they are now.
+            if let recipe, let made = document?.layers[index].asset { RawOrigins.shared.register(made, from: recipe) }
         } catch { brushError = error.localizedDescription }
     }
 

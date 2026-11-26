@@ -266,7 +266,7 @@ extension EditorSession {
         let mapping = Dictionary(uniqueKeysWithValues: originals.map { ($0.id, UUID()) })
         let copies = originals.map { original in
             ImageLayer(id: mapping[original.id]!, asset: displayedAsset(for: original),
-                name: original.name + (original.id == layer.id ? " copy" : ""), isVisible: original.isVisible,
+                name: original.name + (original.id == layer.id ? L10n.string(" copy") : ""), isVisible: original.isVisible,
                 transform: original.transform, parentID: original.parentID.map { mapping[$0] ?? $0 },
                 isGroup: original.isGroup, opacity: original.opacity, blendMode: original.blendMode,
                 mask: original.mask, maskSourceID: original.maskSourceID.map { mapping[$0] ?? $0 },
@@ -345,8 +345,8 @@ extension EditorSession {
     func nextLayerName() -> String {
         let names = Set(document?.layers.map(\.name) ?? [])
         var number = 1
-        while names.contains("Layer \(number)") { number += 1 }
-        return "Layer \(number)"
+        while names.contains(String(localized: "Layer \(number)")) { number += 1 }
+        return String(localized: "Layer \(number)")
     }
 
     /// Normalizes an image from another app to the working sRGB RGBA format.

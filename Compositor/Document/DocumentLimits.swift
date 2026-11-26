@@ -36,6 +36,12 @@ nonisolated enum DocumentLimits {
     static let documentPixelBudget = min(800_000_000,
         max(maxSurfacePixels, Int(clamping: ProcessInfo.processInfo.physicalMemory / 16)))
 
+    /// What the undo history may hold in pixels the document no longer shows. Scaled to the Mac as the document's own
+    /// budget is: an eighth of its memory (3 GB on 24), never less than 256 MB. A 42-megapixel 16-bit layer is 480 MB
+    /// a version, so that is its six most recent steps kept as pixels and returned to at once. Older steps of a RAW
+    /// layer are kept as stand-ins (`DocumentHistory.slim`); of any other layer, they are dropped.
+    static let historyBytes = max(256 * 1024 * 1024, Int(clamping: ProcessInfo.processInfo.physicalMemory / 8))
+
     /// The two ceilings as megapixels, for the messages that quote them back to the reader.
     static var maxSurfaceMegapixels: Int { maxSurfacePixels / 1_000_000 }
     static var documentBudgetMegapixels: Int { documentPixelBudget / 1_000_000 }

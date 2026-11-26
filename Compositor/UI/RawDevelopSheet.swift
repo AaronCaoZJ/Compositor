@@ -55,7 +55,8 @@ struct RawDevelopSheet: View {
                     Toggle("Highlight Recovery", isOn: $settings.highlightRecovery)
                         .disabled(!settings.supportsHighlightRecovery)
                         .help(settings.supportsHighlightRecovery ? "Brings back detail in bright areas the camera partly clipped"
-                                                                 : "Not available for this camera")
+                                                                 : RawImporter.systemHasHighlightRecovery
+                                                                     ? "Not available for this camera" : "Needs macOS 26 or later")
                 }
                 .padding(.leading, 120)
 
@@ -96,7 +97,7 @@ struct RawDevelopSheet: View {
     private func slider(_ title: String, value: Binding<Float>, range: ClosedRange<Float>,
                         unit: String, precision: Int) -> some View {
         HStack(spacing: 10) {
-            Text(title).frame(width: 110, alignment: .leading)
+            Text(L10n.string(title)).frame(width: 110, alignment: .leading)
             AppSlider(value: value, in: range).frame(width: 300)
             Text(String(format: "%.\(precision)f%@", value.wrappedValue, unit))
                 .monospacedDigit().foregroundStyle(.secondary)

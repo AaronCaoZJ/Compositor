@@ -25,6 +25,10 @@ nonisolated final class MetalFinishing: @unchecked Sendable {
         /// Where the first output texel's corner sits in the image's coordinates, and which way rows run in them.
         var outputOrigin: SIMD2<Float> = .zero
         var rowSign: Float = 1
+        /// Where the output's first texel is in each input's texture. Core Image may hand over more of an input than
+        /// was asked for: on macOS 15 it does of the image Tonal Contrast also blurs, by the blur's reach.
+        var imageOffset: SIMD2<Int32> = .zero
+        var blurredOffset: SIMD2<Int32> = .zero
     }
 
     private init() throws {
@@ -83,6 +87,8 @@ struct Parameters {
     float midtones;
     float2 outputOrigin;
     float rowSign;
+    int2 imageOffset;
+    int2 blurredOffset;
 };
 
 float rec709(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }
@@ -94,7 +100,7 @@ kernel void vignette(texture2d<float, access::read> image [[texture(0)]],
                      constant Parameters &p [[buffer(0)]],
                      uint2 pixel [[thread_position_in_grid]]) {
     if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
-    float4 color = image.read(pixel);
+    float4 color = image.read(uint2(int2(pixel) + p.imageOffset));
     if (color.a <= 0) { result.write(color, pixel); return; }
     float2 at = p.outputOrigin + float2(float(pixel.x) + 0.5, p.rowSign * (float(pixel.y) + 0.5));
     float2 n = (at - p.canvasOrigin) / p.canvasSize * 2.0 - 1.0;
@@ -116,7 +122,8 @@ kernel void tonalContrast(texture2d<float, access::read> image [[texture(0)]],
                           constant Parameters &p [[buffer(0)]],
                           uint2 pixel [[thread_position_in_grid]]) {
     if (pixel.x >= result.get_width() || pixel.y >= result.get_height()) return;
-    float4 color = image.read(pixel), base = blurred.read(pixel);
+    float4 color = image.read(uint2(int2(pixel) + p.imageOffset));
+    float4 base = blurred.read(uint2(int2(pixel) + p.blurredOffset));
     if (color.a <= 0 || base.a <= 0) { result.write(color, pixel); return; }
     float3 c = straight(color);
     float lum = rec709(c), baseLum = rec709(straight(base));
@@ -139,18 +146,24 @@ final class FinishingKernel: CIImageProcessorKernel {
 
     override class func process(with inputs: [CIImageProcessorInput]?, arguments: [String: Any]?,
                                 output: CIImageProcessorOutput) throws {
-        guard let inputs, let first = inputs.first?.metalTexture, let destination = output.metalTexture,
+        guard let inputs, let image = inputs.first, let first = image.metalTexture, let destination = output.metalTexture,
               let command = output.metalCommandBuffer, let gpu = MetalFinishing.shared,
               let data = arguments?["parameters"] as? Data, data.count >= MemoryLayout<MetalFinishing.Parameters>.size,
               let encoder = command.makeComputeCommandEncoder() else { throw ExportError.render }
         var parameters = data.withUnsafeBytes { $0.loadUnaligned(as: MetalFinishing.Parameters.self) }
         parameters.outputOrigin = SIMD2(Float(output.region.minX), Float(rowsTopDown ? output.region.maxY : output.region.minY))
         parameters.rowSign = rowsTopDown ? -1 : 1
+        func offset(_ input: CIImageProcessorInput) -> SIMD2<Int32> {
+            SIMD2(Int32(output.region.minX - input.region.minX),
+                  Int32(rowsTopDown ? input.region.maxY - output.region.maxY : output.region.minY - input.region.minY))
+        }
+        parameters.imageOffset = offset(image)
         let tonal = arguments?["kernel"] as? String == "tonal"
         encoder.setComputePipelineState(tonal ? gpu.tonal : gpu.vignette)
         encoder.setTexture(first, index: 0)
         if tonal {
             guard inputs.count > 1, let blurred = inputs[1].metalTexture else { encoder.endEncoding(); throw ExportError.render }
+            parameters.blurredOffset = offset(inputs[1])
             encoder.setTexture(blurred, index: 1)
             encoder.setTexture(destination, index: 2)
         } else {
