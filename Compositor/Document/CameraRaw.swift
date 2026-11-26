@@ -402,8 +402,8 @@ extension EditorSession {
               let document, CGRect(origin: .zero, size: document.size).contains(point) else { return }
         let pixel = point.applying(edit.mapping.inverted())
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
-        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.original.image.width),
-              pixel.y < CGFloat(edit.original.image.height), let sample = edit.original.image.cropping(to: rect) else { return }
+        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.previewSource.width),
+              pixel.y < CGFloat(edit.previewSource.height), let sample = edit.previewSource.cropping(to: rect) else { return }
         do {
             let context = try BrushRaster.context(width: 1, height: 1, mask: false)
             BrushRaster.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1), mask: false, context: context)
@@ -427,7 +427,7 @@ extension EditorSession {
         var settings = edit.settings
         settings.cameraRaw.whiteBalance = .auto
         updateFilter(settings, preview: edit.preview)
-        let image = edit.original.image
+        let image = edit.previewSource
         let solved = await Task.detached(priority: .userInitiated) {
             CameraRawSettings.autoBalance(of: image)
         }.value
@@ -444,8 +444,8 @@ extension EditorSession {
               let document, CGRect(origin: .zero, size: document.size).contains(point) else { return }
         let pixel = point.applying(edit.mapping.inverted())
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
-        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.original.image.width),
-              pixel.y < CGFloat(edit.original.image.height), let sample = edit.original.image.cropping(to: rect) else { return }
+        guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(edit.previewSource.width),
+              pixel.y < CGFloat(edit.previewSource.height), let sample = edit.previewSource.cropping(to: rect) else { return }
         do {
             let context = try BrushRaster.context(width: 1, height: 1, mask: false)
             BrushRaster.draw(sample, in: CGRect(x: 0, y: 0, width: 1, height: 1), mask: false, context: context)

@@ -16,6 +16,8 @@ struct CameraRawControls: View {
             histogram
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
+                    // A layer still as its RAW file developed it: the develop's own controls come first.
+                    if session.filterEdit?.rawSettings != nil { CameraRawDevelopControls(session: session) }
                     ForEach(Section.allCases) { section in
                         disclosure(section)
                     }

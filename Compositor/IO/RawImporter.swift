@@ -187,6 +187,97 @@ nonisolated enum RawImporter {
     }
 }
 
+/// The RAW file a layer's pixels were developed from, and the settings they were developed with. Camera Raw develops
+/// the file again when its RAW controls move, where the latitude the layer no longer has still is (`RawDeveloper`).
+/// The file's own bytes, not its place on disk: that may be a dropped file's short-lived copy, or somewhere the
+/// sandbox lets the app read only while it is being imported.
+nonisolated final class RawOrigin: @unchecked Sendable {
+    let data: Data
+    /// The file's type, which tells the engine whose format the bytes are.
+    let type: String?
+    let settings: RawDevelopSettings
+
+    init(data: Data, type: String?, settings: RawDevelopSettings) {
+        self.data = data
+        self.type = type
+        self.settings = settings
+    }
+
+    /// The file mapped rather than read, where that is safe, so a 90 MB file costs no memory until it is developed.
+    convenience init?(url: URL, settings: RawDevelopSettings) {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else { return nil }
+        self.init(data: data, type: UTType(filenameExtension: url.pathExtension)?.identifier, settings: settings)
+    }
+
+    func developed(with settings: RawDevelopSettings) -> RawOrigin { RawOrigin(data: data, type: type, settings: settings) }
+}
+
+/// Which pixels came straight from which RAW file. Told by the images themselves rather than kept on the layer: once
+/// anything else is done to a layer its images are new ones, which aren't found here, and undone they are the old ones
+/// again. Nothing is held: an entry goes when its images do. Not saved with a project.
+final class RawOrigins {
+    static let shared = RawOrigins()
+    private struct Entry {
+        weak var image: CGImage?
+        weak var deep: CGImage?
+        let origin: RawOrigin
+    }
+    private var entries: [Entry] = []
+
+    func register(_ asset: ImportedImage, from origin: RawOrigin) {
+        entries.removeAll { $0.image == nil || $0.deep == nil }
+        guard let deep = asset.deep else { return }
+        entries.append(Entry(image: asset.image, deep: deep, origin: origin))
+    }
+
+    /// Nil for a layer that has been painted on, whose strokes lie over these pixels (`raster`), and for any whose
+    /// pixels are no longer the developed ones.
+    func origin(of asset: ImportedImage?) -> RawOrigin? {
+        guard let asset, asset.raster == nil, let deep = asset.deep else { return nil }
+        return entries.first { $0.image === asset.image && $0.deep === deep }?.origin
+    }
+}
+
+/// A RAW file held open while Camera Raw works on a layer developed from it. The engine decodes the file once, about
+/// a second for 42 megapixels; after that a change of exposure or white balance renders in about 10 ms at a draft's
+/// size and 0.2 s at the photo's own, which is what lets the RAW controls follow a drag.
+actor RawDeveloper {
+    private let origin: RawOrigin
+    /// The decoder kept between develops, and the white point it read from the file.
+    private var kept: (filter: CIRAWFilter, asShot: CGPoint)?
+
+    init(_ origin: RawOrigin) { self.origin = origin }
+
+    /// The file developed with `settings`: no longer than `limit` on its longest side and dithered to 8 bits, as a
+    /// preview's source; or whole, at 8 bits or (`sixteenBit`) the 16 a layer keeps. As `RawImporter.develop` makes
+    /// it, so the same settings give the pixels the import did. `fresh` decodes the file anew, about a second more:
+    /// for the pixels a layer keeps, which then owe nothing to what this decoder was asked for before.
+    func develop(_ settings: RawDevelopSettings, limit: CGFloat? = nil, sixteenBit: Bool = false, fresh: Bool = false) -> CGImage? {
+        if fresh {
+            guard let filter = CIRAWFilter(imageData: origin.data, identifierHint: origin.type) else { return nil }
+            return RawImporter.render(filter, settings: settings, sixteenBit: sixteenBit)
+        }
+        if kept == nil, let made = CIRAWFilter(imageData: origin.data, identifierHint: origin.type) {
+            kept = (made, made.neutralChromaticity)
+        }
+        guard let (filter, asShot) = kept else { return nil }
+        // Every develop starts from the file's own exposure and white point. Without that the engine's result
+        // depends a little on the way its settings came: exposure moved in draft mode, away from the camera's white
+        // balance, left most values a fraction of a level off those of a decoder set there at once, and a few far off.
+        filter.exposure = 0
+        filter.neutralChromaticity = asShot
+        let longest = max(filter.nativeSize.width, filter.nativeSize.height)
+        if let limit, longest > limit {
+            filter.scaleFactor = Float(limit / longest)
+            filter.isDraftModeEnabled = true
+        } else {
+            filter.scaleFactor = 1
+            filter.isDraftModeEnabled = false
+        }
+        return RawImporter.render(filter, settings: settings, sixteenBit: sixteenBit)
+    }
+}
+
 /// Highlight recovery arrived in macOS 26. Before it the engine has no such switch, so it reads as unsupported and
 /// off, and the develop sheet greys its toggle out as it does for a camera without it.
 nonisolated private extension CIRAWFilter {

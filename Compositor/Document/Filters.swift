@@ -682,6 +682,22 @@ final class FilterEdit {
     @ObservationIgnored var fullRender: Task<Void, Never>?
     /// How long the last full-size render took: one that keeps up with a drag needs no draft before it.
     @ObservationIgnored var fullRenderSeconds: Double?
+    /// Camera Raw on a layer whose pixels are still what a RAW file developed to (`RawOrigin`): the develop's own
+    /// settings, which the panel's RAW section shows. Changed there, the file is developed again, and that takes the
+    /// layer's place as what the rest of the panel works on (`EditorSession.updateCameraRawDevelop`): exposure and
+    /// white balance set where the file's latitude still is, not on pixels that have lost it. Nil for any other layer.
+    var rawSettings: RawDevelopSettings?
+    @ObservationIgnored private(set) var rawOrigin: RawOrigin?
+    @ObservationIgnored private(set) var rawDeveloper: RawDeveloper?
+    /// What `previewSource`, and the draft, were last developed with.
+    @ObservationIgnored private(set) var rawSourceSettings: RawDevelopSettings?
+    @ObservationIgnored private(set) var rawDraftSettings: RawDevelopSettings?
+    @ObservationIgnored var rawDraftTask: Task<Void, Never>?
+    @ObservationIgnored var rawFullTask: Task<Void, Never>?
+    /// `previewSource` is an older develop than the RAW section asks for: only a draft shows what it asks for.
+    var rawSourceIsStale: Bool { rawSettings != nil && rawSourceSettings != rawSettings }
+    /// The RAW section has moved from what the layer was developed with, so OK develops the file again.
+    var redevelopsRaw: Bool { rawSettings != nil && rawSettings != rawOrigin?.settings }
     /// Volumetric Light's first preview, held for the depth model (`beginFilter`).
     @ObservationIgnored var waitsForDepth = false
     /// Previews render from a copy no larger than this on its longest side.
@@ -850,8 +866,33 @@ final class FilterEdit {
     /// play (about 0.1 s for 42 megapixels). Zoomed in, the first render is a full one, which is how that is known.
     func draftJob(shown: CGFloat) -> FilterJob? {
         guard let draft else { return nil }
-        if shown > draft.scale * 1.25, fullRenderSeconds ?? 0 <= Self.keepsUpSeconds { return nil }
+        // While a RAW control moves, the draft is the only source developed with what it asks for.
+        if !rawSourceIsStale, shown > draft.scale * 1.25, fullRenderSeconds ?? 0 <= Self.keepsUpSeconds { return nil }
         return job(from: draft.image, scale: draft.scale, mapping: draft.mapping)
+    }
+
+    /// Camera Raw's RAW section for this layer, whose pixels `origin`'s file developed to.
+    func developsRaw(from origin: RawOrigin) {
+        rawOrigin = origin
+        rawSettings = origin.settings
+        rawSourceSettings = origin.settings
+        rawDraftSettings = origin.settings
+        rawDeveloper = RawDeveloper(origin)
+    }
+
+    /// The file developed again at a draft's size, in the draft's place.
+    func takeRawDraft(_ image: CGImage, developedWith settings: RawDevelopSettings) {
+        draft = (image, CGFloat(image.width) / CGFloat(max(1, previewSource.width)),
+                 BrushRaster.pixelToDocument(transform, width: image.width, height: image.height))
+        rawDraftSettings = settings
+        previewSourceVersion &+= 1
+    }
+
+    /// The file developed again whole, as what the preview is made from, with a draft made from it.
+    func takeRawSource(_ image: CGImage, developedWith settings: RawDevelopSettings) throws {
+        try prepare(from: image, placed: transform)
+        rawSourceSettings = settings
+        rawDraftSettings = settings
     }
 
     private func job(from image: CGImage, scale: CGFloat, mapping: CGAffineTransform) -> FilterJob {
@@ -949,6 +990,12 @@ extension EditorSession {
             if fillsCanvas { edit.canvas = canvas }
             edit.startedEmpty = startedEmpty
             edit.repeating = repeating
+            // A layer still as a RAW file developed it gets the panel's RAW section. Not with a selection, which
+            // keeps the rest of the layer as it is, where a new develop changes all of it.
+            if kind == .cameraRaw, !repeating, adjustmentOriginal == nil, edit.selection == nil,
+               let origin = RawOrigins.shared.origin(of: layer.asset) {
+                edit.developsRaw(from: origin)
+            }
             filterEdit = edit
             // Volumetric Light's depth model, downloaded the first time: the first preview waits for it, so the fog
             // doesn't draw from its own guess and then jump to the depth. Fetching and compiling it takes about 3 seconds;
@@ -984,6 +1031,10 @@ extension EditorSession {
             // slider moved doesn't wait for them.
             if kind == .cameraRaw {
                 Task.detached(priority: .userInitiated) { _ = CameraRawTables.tables; _ = CameraRawShadows.tables }
+            }
+            // And the RAW file decoded, about a second: after it, a RAW control's change renders in milliseconds.
+            if let developer = edit.rawDeveloper, let developed = edit.rawSettings {
+                Task.detached(priority: .userInitiated) { _ = await developer.develop(developed, limit: FilterEdit.draftLimit) }
             }
             // An automatic filter commits what its preview made, so it still needs one.
             if !waitsForDepth { updateFilter(edit.settings, preview: !repeating || kind.isAutomatic) }
@@ -1091,8 +1142,9 @@ extension EditorSession {
         guard filterEdit === edit, edit.previewTask == nil, var job = edit.pending else { return }
         if job.kind == .cameraRaw { job.cameraRawBrightness = edit.previewBrightness }
         // The layer's own pixels, which the adaptive sliders are measured from even when a draft is what renders, so
-        // the draft and the full render that replaces it agree.
-        let whole = job.image
+        // the draft and the full render that replaces it agree. While a RAW control moves, those are of an older
+        // develop, and the draft is measured instead.
+        let whole = edit.rawSourceIsStale ? edit.pendingDraft?.image ?? job.image : job.image
         let key = edit.pendingKey
         var drafted = false
         if var draft = edit.pendingDraft {
@@ -1160,14 +1212,16 @@ extension EditorSession {
     /// The layer's own pixels in place of a draft, once the controls have rested for `refineDelay`. A change in the
     /// meantime cancels this and starts over from a draft, which never waits for a full-size render: one already
     /// running is left to finish and its result dropped, and the next waits for it, so there is only ever one.
-    private func refineFilterPreview(_ edit: FilterEdit) {
-        guard filterEdit === edit, edit.kind == .cameraRaw, !edit.committing else { return }
+    /// `rest` is none when the controls are known to have rested already, as after a RAW develop that waited for them.
+    func refineFilterPreview(_ edit: FilterEdit, after rest: Duration = FilterEdit.refineDelay) {
+        // Not from a RAW develop older than the one asked for: the new one starts this again when it arrives.
+        guard filterEdit === edit, edit.kind == .cameraRaw, !edit.committing, !edit.rawSourceIsStale else { return }
         var job = edit.previewJob
         let key = edit.previewKey
         let placement = edit.grownTransform
         edit.refineTask?.cancel()
         edit.refineTask = Task { @MainActor [weak self, weak edit] in
-            try? await Task.sleep(for: FilterEdit.refineDelay)
+            try? await Task.sleep(for: rest)
             await edit?.fullRender?.value
             guard !Task.isCancelled, let self, let edit, self.filterEdit === edit, !edit.committing else { return }
             job.cameraRawBrightness = edit.previewBrightness
@@ -1238,6 +1292,7 @@ extension EditorSession {
         guard let edit = filterEdit, !edit.committing else { return }
         edit.previewTask?.cancel()
         edit.refineTask?.cancel()
+        edit.rawDraftTask?.cancel(); edit.rawFullTask?.cancel()
         if edit.kind == .cameraRaw, edit.previewJob.cameraRawUsesGPU {
             Task.detached(priority: .utility) { MetalCameraRawLookup.shared?.discardBuffers() }
         }
@@ -1274,10 +1329,12 @@ extension EditorSession {
                 (edit.settings.tonalShadows == 0 && edit.settings.tonalMidtones == 0 && edit.settings.tonalHighlights == 0)))
             || (edit.kind == .exposure && edit.settings.exposure == ExposureSettings())
             || (edit.kind == .grain && edit.settings.grain.amount == 0)
-            || (edit.kind == .cameraRaw && rendered.cameraRaw.isIdentity) { cancelFilter(); return }
+            // (A new develop of the RAW file is a change by itself, with every slider below it at rest.)
+            || (edit.kind == .cameraRaw && rendered.cameraRaw.isIdentity && !edit.redevelopsRaw) { cancelFilter(); return }
         edit.committing = true
         edit.previewTask?.cancel()
         edit.refineTask?.cancel()
+        edit.rawDraftTask?.cancel(); edit.rawFullTask?.cancel()
         if edit.kind != .cameraRaw { filterSettings = edit.settings }
         if edit.kind.repeatsAsLastFilter { lastFilter = edit.kind }
         isProjectBusy = true
@@ -1291,13 +1348,27 @@ extension EditorSession {
         // Remove Background masks the background out rather than erasing it, so it can be brought back at any time
         // by painting the mask, disabling it, or deleting it.
         if edit.kind == .removeBackground { await commitBackgroundMask(edit); return }
+        // Camera Raw's RAW section moved: the file is developed once more, whole and at 16 bits, and the rest of the
+        // panel is applied to that in place of the layer's pixels. `edit.original` stays what the layer still holds.
+        var source = edit.original
+        var developedFrom: RawOrigin?
+        if edit.redevelopsRaw, let developer = edit.rawDeveloper, let origin = edit.rawOrigin, let wanted = edit.rawSettings {
+            let name = edit.original.name
+            let developed = await Task.detached(priority: .userInitiated) { () -> ImportedImage? in
+                guard let image = await developer.develop(wanted, sixteenBit: true, fresh: true) else { return nil }
+                return try? DeepLayer.asset(image, name: name)
+            }.value
+            guard let developed else { brushError = "Couldn’t develop the RAW file again."; return }
+            source = developed
+            developedFrom = origin.developed(with: wanted)
+        }
         // A blur that keeps the layer's transparency has no use for room around it (opening the panel may have made
         // some for the blur it started with): it's applied to the layer as it was, which leaves its size alone.
         let keepsOutline = edit.kind == .gaussianBlur && edit.settings.preserveTransparency
-        let mapping = keepsOutline
-            ? BrushRaster.pixelToDocument(edit.transform, width: edit.original.image.width, height: edit.original.image.height)
+        let mapping = keepsOutline || developedFrom != nil
+            ? BrushRaster.pixelToDocument(edit.transform, width: source.image.width, height: source.image.height)
             : edit.mapping
-        var job = FilterJob(kind: edit.kind, image: keepsOutline ? edit.original.image : edit.grownImage ?? edit.original.image,
+        var job = FilterJob(kind: edit.kind, image: keepsOutline ? source.image : edit.grownImage ?? source.image,
                             settings: edit.renderSettings(), scale: 1, selection: edit.selection, mapping: mapping, seed: edit.seed)
         job.canvas = edit.canvas
         job.canvasSides = edit.canvasSides
@@ -1310,11 +1381,14 @@ extension EditorSession {
             // Content-Aware Fill makes new pixels from scratch; Dither's result is a few levels by design (three runs read
             // between would mix its patterns into colors); Remove Background would find the subject three times over.
             let rasterizes = edit.kind == .contentAwareFill || edit.kind == .dither || edit.kind == .removeBackground
-            let deep = rasterizes ? nil : try DeepLayer.flattened(edit.original)
+            let deep = rasterizes ? nil : try DeepLayer.flattened(source)
             let deepGrid = keepsOutline ? nil : edit.grownImage.flatMap { grownImage in
                 edit.grownInside.map { (size: CGSize(width: grownImage.width, height: grownImage.height), inside: $0) }
             }
+            // Only the RAW develop changed: the new develop is the result as it stands.
+            let developedOnly = developedFrom != nil && rendered.cameraRaw.isIdentity ? source : nil
             let made = try await Task.detached(priority: .userInitiated) { () -> (asset: ImportedImage, transform: LayerTransform?) in
+                if let developedOnly { return (developedOnly, grown) }
                 // Exposure on an HDR layer, exactly: turned down, it brings highlights into view.
                 if let deep, DeepLayer.isHDR(deep), job.kind == .exposure {
                     var result = try DeepLayer.exposure(deep, job.settings.exposure)
@@ -1384,6 +1458,11 @@ extension EditorSession {
             beginEdit(edit.kind.rawValue)
             document?.layers[index] = edited
             endEdit()
+            // Only the develop changed: the layer is still what the file develops to, now with these settings, and
+            // Camera Raw's RAW section is there the next time.
+            if let developedFrom, rendered.cameraRaw.isIdentity, let made = edited.asset {
+                RawOrigins.shared.register(made, from: developedFrom)
+            }
         } catch { brushError = error.localizedDescription }
     }
 
