@@ -6,6 +6,8 @@ Compositor supports English and Simplified Chinese (`zh-Hans`). The app follows 
 
 Translations live in `Compositor/Resources/Localizable.xcstrings`. Add both English and Simplified Chinese translations when adding UI text. Keep standard image-editing terms consistent: layer = 图层, mask = 蒙版, clipping mask = 剪贴蒙版, opacity = 不透明度, blend mode = 混合模式.
 
+Terms follow the Simplified Chinese editions of Adobe's apps, so the app reads as Photoshop and Lightroom do: Camera Raw's wording in the Camera Raw panel (dehaze = 去除薄雾, vignette = 晕影, distortion = 扭曲度), Photoshop's everywhere else (save = 存储, undo = 还原, reset = 复位, thumbnail = 缩览图, dither = 仿色), and Lightroom Classic's where it alone has the control (guided = 引导式). A catalog key has one translation: where it labels two things Adobe words differently, it takes the wording that reads right in both.
+
 - SwiftUI literals such as `Text("Preview")` use native localization. For a custom view accepting a built-in label as a `String`, use `L10n.string(title)` at the display boundary.
 - AppKit labels, alerts, error descriptions, and interpolated messages use `String(localized: "…")`. Localize interpolated built-in labels before inserting them into the surrounding message.
 - `L10n.string` looks up a complete, stable key. It cannot translate an interpolated sentence after its variables have been substituted. Use `String(localized:)` for these sentences instead.
@@ -45,4 +47,4 @@ Check the welcome screen, main menus, layer context menu, blend modes, command s
 
 ## Where the translations came from
 
-The catalog, `L10n` and these conventions are [emptykid/Compositor](https://github.com/emptykid/Compositor)'s, as of upstream 1.5.11, carried onto 1.7.2 here with the text added since.
+The catalog, `L10n` and these conventions are [emptykid/Compositor](https://github.com/emptykid/Compositor)'s, as of upstream 1.5.11, carried onto 1.7.2 here with the text added since. The terms were then checked against the Chinese string tables of Photoshop 2026, Camera Raw 18 and Lightroom Classic 15.
