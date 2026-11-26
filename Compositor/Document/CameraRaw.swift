@@ -490,7 +490,7 @@ extension EditorSession {
     func updateCameraRawReadout(at point: CGPoint) {
         guard let edit = filterEdit, edit.kind == .cameraRaw else { return }
         let image = edit.preparedPreview ?? edit.previewSource
-        let pixel = point.applying(edit.previewMapping.inverted())
+        let pixel = edit.previewPixel(at: point, in: image)
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
         guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(image.width), pixel.y < CGFloat(image.height),
               let sample = image.cropping(to: rect) else {
@@ -589,7 +589,7 @@ extension EditorSession {
     private func cameraRawSample(at point: CGPoint) -> (tone: Double, hue: Double, saturation: Double, luminance: Double)? {
         guard let edit = filterEdit else { return nil }
         let image = edit.preparedPreview ?? edit.previewSource
-        let pixel = point.applying(edit.previewMapping.inverted())
+        let pixel = edit.previewPixel(at: point, in: image)
         let rect = CGRect(x: floor(pixel.x), y: floor(pixel.y), width: 1, height: 1)
         guard pixel.x >= 0, pixel.y >= 0, pixel.x < CGFloat(image.width), pixel.y < CGFloat(image.height),
               let sample = image.cropping(to: rect),
